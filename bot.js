@@ -460,3 +460,15 @@ bot.onText(/\/post/, async (msg) => {
 log('🤖 Bot started!');
 log(`📊 ${data.length} numbers, ${getCountries().length} countries`);
 log(`⏰ Fresh window: ${FRESH_WINDOW_MINUTES} minutes`);
+
+// Auto-reload data every 2 minutes so we pick up new scraped numbers
+const RELOAD_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
+setInterval(() => {
+  const oldCount = data.length;
+  loadData();
+  messageCache.clear();
+  if (data.length !== oldCount) {
+    log(`🔄 Auto-reload: ${oldCount} → ${data.length} numbers`);
+  }
+}, RELOAD_INTERVAL_MS);
+log(`🔄 Auto-reload data every ${RELOAD_INTERVAL_MS / 1000}s`);
