@@ -1,12 +1,10 @@
 // app.js
-// Main entry: serves mini-website + runs scraper + starts bot
-// For Render Web Service deployment
+// Main entry: runs scraper FIRST (waits for it), then starts web + bot
 
 const express = require('express');
 const { scrapeAll } = require('./scraper-sms24');
 const { spawn } = require('child_process');
 const fs = require('fs');
-const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -15,19 +13,25 @@ let botProcess = null;
 let lastScrape = null;
 let scrapingStatus = 'idle';
 let totalNumbers = 0;
+let appStartedAt = new Date();
 
 function log(msg) {
   console.log(`[${new Date().toISOString()}] ${msg}`);
 }
 
 function countNumbers() {
+  let count = 0;
   try {
     if (fs.existsSync('data-sms24.json')) {
       const data = JSON.parse(fs.readFileSync('data-sms24.json', 'utf-8'));
-      return data.length;
+      count += data.length;
+    }
+    if (fs.existsSync('data.json')) {
+      const data = JSON.parse(fs.readFileSync('data.json', 'utf-8'));
+      count += data.length;
     }
   } catch (e) {}
-  return 0;
+  return count;
 }
 
 // =================== WEBSITE ===================
@@ -35,7 +39,8 @@ function countNumbers() {
 app.get('/', (req, res) => {
   totalNumbers = countNumbers();
   const uptime = process.uptime();
-  const uptimeStr = `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`;
+  const hours = Math.floor(uptime / 3600);
+  const minutes = Math.floor((uptime % 3600) / 60);
 
   res.send(`
 <!DOCTYPE html>
@@ -65,8 +70,8 @@ app.get('/', (req, res) => {
       padding: 40px;
       box-shadow: 0 8px 32px rgba(0,0,0,0.1);
     }
-    h1 { font-size: 2.5em; margin-bottom: 10px; }
-    .subtitle { opacity: 0.9; margin-bottom: 30px; }
+    h1 { font-size: 2.5em; margin-bottom: 10px; text-align: center; }
+    .subtitle { opacity: 0.9; margin-bottom: 30px; text-align: center; }
     .status-card {
       background: rgba(255,255,255,0.15);
       border-radius: 12px;
@@ -80,10 +85,11 @@ app.get('/', (req, res) => {
       border-bottom: 1px solid rgba(255,255,255,0.1);
     }
     .status-row:last-child { border-bottom: none; }
-    .label { opacity: 0.8; }
+    .label { opacity: 0.85; }
     .value { font-weight: bold; }
     .green { color: #4ade80; }
     .yellow { color: #fbbf24; }
+    .red { color: #f87171; }
     .btn {
       display: inline-block;
       background: #fff;
@@ -103,8 +109,8 @@ app.get('/', (req, res) => {
 <body>
   <div class="container">
     <div class="emoji">📱</div>
-    <h1>Free SMS Numbers Bot</h1>
-    <p class="subtitle">Get free temporary phone numbers for SMS verification</p>
+    <h1>Free SMS Bot</h1>
+    <p class="subtitle">Temporary phone numbers for SMS verification</p>
 
     <div class="status-card">
       <div class="status-row">
@@ -116,26 +122,28 @@ app.get('/', (req, res) => {
         <span class="value">${totalNumbers}</span>
       </div>
       <div class="status-row">
-        <span class="label">🔄 Scraper Status</span>
+        <span class="label">🔄 Scraper</span>
         <span class="value ${scrapingStatus === 'running' ? 'yellow' : 'green'}">${scrapingStatus}</span>
       </div>
       <div class="status-row">
         <span class="label">⏰ Uptime</span>
-        <span class="value">${uptimeStr}</span>
+        <span class="value">${hours}h ${minutes}m</span>
       </div>
       <div class="status-row">
         <span class="label">📅 Last Scrape</span>
-        <span class="value">${lastScrape || 'Just started'}</span>
+        <span class="value">${lastScrape ? new Date(lastScrape).toLocaleString() : 'Just started'}</span>
       </div>
     </div>
 
-    <a href="https://t.me/patrick_sms_bot" class="btn">🤖 Open in Telegram</a>
-    <a href="/ping" class="btn">📡 Ping</a>
-    <a href="/stats" class="btn">📊 Stats</a>
+    <div style="text-align: center;">
+      <a href="https://t.me/patrick_sms_bot" class="btn">🤖 Open Bot</a>
+      <a href="/ping" class="btn">📡 Ping</a>
+      <a href="/stats" class="btn">📊 Stats</a>
+    </div>
 
     <div class="footer">
-      Powered by Render • Scraping sms24.me<br>
-      Made with 💯 by @phantom-dev-x
+      Powered by Render • Made with 💯<br>
+      Source: sms24.me + receive-sms.cc
     </div>
   </div>
 </body>
@@ -146,9 +154,10 @@ app.get('/', (req, res) => {
 app.get('/ping', (req, res) => {
   res.json({
     status: 'alive',
-    uptime: process.uptime(),
+    uptime_seconds: Math.floor(process.uptime()),
     numbers: countNumbers(),
     scraper: scrapingStatus,
+    last_scrape: lastScrape,
     timestamp: new Date().toISOString()
   });
 });
@@ -157,18 +166,15 @@ app.get('/stats', (req, res) => {
   try {
     let data = [];
     if (fs.existsSync('data-sms24.json')) {
-      data = JSON.parse(fs.readFileSync('data-sms24.json', 'utf-8'));
+      data = data.concat(JSON.parse(fs.readFileSync('data-sms24.json', 'utf-8')));
     }
     if (fs.existsSync('data.json')) {
-      const r2 = JSON.parse(fs.readFileSync('data.json', 'utf-8'));
-      data = data.concat(r2);
+      data = data.concat(JSON.parse(fs.readFileSync('data.json', 'utf-8')));
     }
-
     const countries = {};
     data.forEach(n => {
       countries[n.country] = (countries[n.country] || 0) + 1;
     });
-
     res.json({
       total: data.length,
       countries: Object.keys(countries).length,
@@ -194,20 +200,21 @@ app.get('/rescrape', async (req, res) => {
 
 async function runScraper() {
   if (scrapingStatus === 'running') {
-    log('⚠️  Scraper already running, skipping');
+    log('⚠️  Scraper already running');
     return;
   }
   scrapingStatus = 'running';
-  log('🔄 Starting scraper...');
+  log('🔄 ============ STARTING SCRAPER ============');
   try {
     await scrapeAll();
     lastScrape = new Date().toISOString();
     totalNumbers = countNumbers();
     log(`✅ Scraper done. Total: ${totalNumbers} numbers`);
   } catch (err) {
-    log(`❌ Scraper failed: ${err.message}`);
+    log(`❌ Scraper error: ${err.message}`);
   } finally {
     scrapingStatus = 'idle';
+    log('🔄 ============ SCRAPER IDLE ============');
   }
 }
 
@@ -221,12 +228,12 @@ function startBot() {
   });
 
   botProcess.on('error', (err) => {
-    log(`❌ Bot crashed: ${err.message}`);
+    log(`❌ Bot crashed: ${err.message}, restarting in 5s...`);
     setTimeout(startBot, 5000);
   });
 
   botProcess.on('exit', (code) => {
-    log(`⚠️  Bot exited with code ${code}, restarting...`);
+    log(`⚠️  Bot exited (code ${code}), restarting in 5s...`);
     setTimeout(startBot, 5000);
   });
 }
@@ -234,26 +241,35 @@ function startBot() {
 // =================== MAIN ===================
 
 async function main() {
-  log('🚀 APP STARTING (Web Service mode)');
+  log('🚀 ============================================');
+  log('🚀 APP STARTING (web + scraper + bot)');
+  log('🚀 ============================================');
 
-  // Start the website
-  app.listen(PORT, () => {
-    log(`🌐 Website running on port ${PORT}`);
+  // Start the website FIRST so Render detects the port
+  app.listen(PORT, '0.0.0.0', () => {
+    log(`🌐 Website LIVE on port ${PORT}`);
   });
-
-  // Run scraper on startup
-  if (process.env.RUN_SCRAPER_ON_START !== 'false') {
-    log('🔄 Running initial scraper...');
-    runScraper();
-  }
 
   // Start the bot
   startBot();
 
+  // Run scraper in background (don't block)
+  if (process.env.RUN_SCRAPER_ON_START !== 'false') {
+    log('🔄 Scheduling initial scraper in 5 seconds...');
+    setTimeout(() => {
+      runScraper().catch(err => log(`❌ Initial scrape failed: ${err.message}`));
+    }, 5000);
+  }
+
   // Re-scrape every 6 hours
   const hours = parseInt(process.env.SCRAPE_INTERVAL_HOURS || '6');
-  setInterval(runScraper, hours * 60 * 60 * 1000);
+  setInterval(() => {
+    log('⏰ Scheduled re-scrape triggered');
+    runScraper().catch(err => log(`❌ Scheduled scrape failed: ${err.message}`));
+  }, hours * 60 * 60 * 1000);
   log(`⏰ Auto re-scrape every ${hours} hours`);
+
+  log('✅ APP READY');
 }
 
 main().catch(err => {
