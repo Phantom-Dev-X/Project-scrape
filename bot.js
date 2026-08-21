@@ -239,6 +239,207 @@ async function postToChannel(num, message) {
   }
 }
 
+// =================== SUDO SYSTEM ===================
+
+const sudoStore = require('./sudo-store');
+
+// Owner ID (the main bot admin) - first user to message the bot can claim it, or set via env
+let OWNER_ID = process.env.OWNER_ID ? String(process.env.OWNER_ID) : null;
+
+// In a group, the bot might receive commands. Track which user can use admin commands
+async function isAdmin(userId) {
+  if (!userId) return false;
+  if (String(userId) === OWNER_ID) return true;
+  return await sudoStore.has(userId);
+}
+
+// Extract user ID from various formats
+// Supports:
+//   - reply to message: get the replied user's ID
+//   - @username: try to resolve via chat member
+//   - raw number: 234939398382 or +234939398382
+async function extractUserIdFromMessage(msg) {
+  // 1. Reply to someone's message
+  if (msg.reply_to_message) {
+    return {
+      id: String(msg.reply_to_message.from.id),
+      name: msg.reply_to_message.from.first_name || msg.reply_to_message.from.username || 'User',
+      source: 'reply'
+    };
+  }
+
+  // 2. @username in text
+  const text = msg.text || '';
+  const mentionMatch = text.match(/@(\w+)/);
+  if (mentionMatch) {
+    const username = mentionMatch[1];
+    try {
+      const chatMember = await bot.getChatMember(msg.chat.id, '@' + username);
+      if (chatMember && chatMember.user) {
+        return {
+          id: String(chatMember.user.id),
+          name: chatMember.user.first_name || username,
+          source: 'username',
+          username
+        };
+      }
+    } catch (e) {
+      // couldn't resolve, fall through
+    }
+  }
+
+  // 3. Raw user ID (digits, possibly with + or @ prefix)
+  const idMatch = text.match(/(\+?\d{6,15})/);
+  if (idMatch) {
+    const rawId = idMatch[1].replace(/^\+/, '');
+    return {
+      id: rawId,
+      name: `User ${rawId}`,
+      source: 'id'
+    };
+  }
+
+  return null;
+}
+
+// .addsudo command
+bot.onText(/^[.!]?addsudo\b/i, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = String(msg.from.id);
+
+  // Only owner can add sudo
+  if (String(userId) !== OWNER_ID) {
+    return bot.sendMessage(chatId, '❌ Only the owner can add sudo users.');
+  }
+
+  const target = await extractUserIdFromMessage(msg);
+  if (!target) {
+    return bot.sendMessage(chatId,
+      '❌ *Usage:*\n' +
+      '• Reply to a message: `.addsudo`\n' +
+      '• Mention: `.addsudo @username`\n' +
+      '• Raw ID: `.addsudo 234939398382`',
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  const result = await sudoStore.add(target.id);
+  bot.sendMessage(chatId,
+    `✅ *Sudo added*\n\n` +
+    `👤 ${target.name}\n` +
+    `🆔 \`${target.id}\`\n` +
+    `📊 Source: ${target.source}\n` +
+    `👥 Total sudo users: ${result.count}` +
+    (result.added ? '' : '\n⚠️ (already sudo)'),
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// .delsudo command
+bot.onText(/^[.!]?delsudo\b/i, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = String(msg.from.id);
+
+  if (String(userId) !== OWNER_ID) {
+    return bot.sendMessage(chatId, '❌ Only the owner can remove sudo users.');
+  }
+
+  const target = await extractUserIdFromMessage(msg);
+  if (!target) {
+    return bot.sendMessage(chatId,
+      '❌ *Usage:*\n' +
+      '• Reply: `.delsudo`\n' +
+      '• Mention: `.delsudo @username`\n' +
+      '• Raw ID: `.delsudo 234939398382`',
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  const result = await sudoStore.remove(target.id);
+  bot.sendMessage(chatId,
+    `🗑️ *Sudo removed*\n\n` +
+    `👤 ${target.name}\n` +
+    `🆔 \`${target.id}\`\n` +
+    `👥 Total sudo users: ${result.count}` +
+    (result.removed ? '' : '\n⚠️ (was not sudo)'),
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// .listsudo command
+bot.onText(/^[.!]?listsudo\b/i, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = String(msg.from.id);
+
+  if (!await isAdmin(userId)) {
+    return bot.sendMessage(chatId, '❌ Owner or sudo only.');
+  }
+
+  const list = await sudoStore.list();
+  if (list.length === 0) {
+    return bot.sendMessage(chatId, '📋 No sudo users yet. Add one with `.addsudo`');
+  }
+
+  let text = `👥 *Sudo Users (${list.length})*\n\n`;
+  list.forEach((id, i) => {
+    text += `${i + 1}. \`${id}\`\n`;
+  });
+  text += `\n💡 Storage: ${process.env.SUPABASE_URL ? 'Supabase ☁️' : 'Local disk 💾'}`;
+
+  bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+});
+
+// .claim command - first person to use it becomes owner if no owner is set
+bot.onText(/^[.!]?claim\b/i, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = String(msg.from.id);
+
+  if (OWNER_ID) {
+    return bot.sendMessage(chatId, '❌ Owner already set.');
+  }
+
+  OWNER_ID = userId;
+  bot.sendMessage(chatId,
+    `👑 *You are now the owner!*\n\n` +
+    `🆔 \`${userId}\`\n\n` +
+    `You can now use:\n` +
+    `• \`.addsudo\` - add sudo users\n` +
+    `• \`.delsudo\` - remove sudo users\n` +
+    `• \`.listsudo\` - list all sudo users`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// .setowner command - set owner (only works if no owner is set yet)
+bot.onText(/^[.!]?setowner\b/i, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = String(msg.from.id);
+
+  if (OWNER_ID && String(userId) !== OWNER_ID) {
+    return bot.sendMessage(chatId, '❌ Owner already set.');
+  }
+
+  const target = await extractUserIdFromMessage(msg);
+  if (!target) {
+    return bot.sendMessage(chatId,
+      '❌ *Usage:*\n' +
+      '• Reply: `.setowner`\n' +
+      '• Mention: `.setowner @username`\n' +
+      '• Raw ID: `.setowner 234939398382`\n\n' +
+      'Or set environment variable: `OWNER_ID=your_id`',
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  OWNER_ID = target.id;
+  bot.sendMessage(chatId,
+    `👑 *Owner set*\n\n` +
+    `👤 ${target.name}\n` +
+    `🆔 \`${target.id}\``,
+    { parse_mode: 'Markdown' }
+  );
+});
+
 // /start
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
@@ -431,6 +632,11 @@ bot.onText(/\/stats/, (msg) => {
 });
 
 bot.onText(/\/post/, async (msg) => {
+  // Sudo-gated: only owner + sudo users can post to channel
+  if (!await isAdmin(msg.from.id)) {
+    return bot.sendMessage(msg.chat.id, '❌ This command is restricted. Ask the owner to add you as sudo.');
+  }
+
   if (data.length === 0) {
     bot.sendMessage(msg.chat.id, '❌ No data');
     return;
