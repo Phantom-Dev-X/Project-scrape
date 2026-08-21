@@ -1,0 +1,7 @@
+.env
+node_modules/
+data.json
+data-sms24.json
+*.csv
+*.log
+.DS_Store

@@ -1,10 +1,11 @@
 {
-  "name": "sms-bot",
+  "name": "project-scrpar",
   "version": "1.0.0",
   "description": "Telegram bot for free SMS verification numbers",
-  "main": "bot.js",
+  "main": "app.js",
   "scripts": {
-    "start": "node bot.js",
+    "start": "node app.js",
+    "bot": "node bot.js",
     "scrape": "node scraper-sms24.js"
   },
   "dependencies": {

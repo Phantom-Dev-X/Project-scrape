@@ -1,0 +1,14 @@
+services:
+  - type: worker
+    name: sms-bot
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node app.js
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: CHANNEL_USERNAME
+        value: "@tmpsms"
+      - key: RUN_SCRAPER_ON_START
+        value: "true"
