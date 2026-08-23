@@ -152,7 +152,19 @@ async function ensureFreshData() {
 }
 
 function getCountries() {
-  return [...new Set(data.map(n => n.country))].sort();
+  // Preferred countries appear first
+  const preferred = ['Poland', 'Netherlands', 'Finland'];
+  const all = [...new Set(data.map(n => n.country))];
+
+  // Sort: preferred first, then alphabetical
+  return all.sort((a, b) => {
+    const aIdx = preferred.indexOf(a);
+    const bIdx = preferred.indexOf(b);
+    if (aIdx !== -1 && bIdx !== -1) return aIdx - bIdx;
+    if (aIdx !== -1) return -1;
+    if (bIdx !== -1) return 1;
+    return a.localeCompare(b);
+  });
 }
 
 function getCountryCount(country) {

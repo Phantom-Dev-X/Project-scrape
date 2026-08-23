@@ -9,6 +9,10 @@ const fs = require('fs');
 const BASE = 'https://receive-sms.cc';
 const OUTPUT_FILE = 'data.json';
 
+// Preferred countries (in priority order)
+// Bot will show these first, but accept others if these aren't available
+const PREFERRED_COUNTRIES = ['Poland', 'Netherlands', 'Finland'];
+
 let CHROME_PATH = null;
 
 function findChromePath() {
@@ -103,10 +107,22 @@ async function scrapeHomepage() {
 }
 
 async function scrapeAll() {
-  const numbers = await scrapeHomepage();
+  const allNumbers = await scrapeHomepage();
+
+  if (allNumbers.length === 0) {
+    log('⚠️  No numbers found');
+    return [];
+  }
+
+  // Sort: preferred countries first, then others
+  const preferred = allNumbers.filter(n => PREFERRED_COUNTRIES.includes(n.country));
+  const others = allNumbers.filter(n => !PREFERRED_COUNTRIES.includes(n.country));
+  const numbers = [...preferred, ...others];
+
+  log(`📊 Preferred: ${preferred.length}, Others: ${others.length}`);
 
   if (numbers.length === 0) {
-    log('⚠️  No numbers found');
+    log('⚠️  No numbers');
     return [];
   }
 
