@@ -395,6 +395,54 @@ async function fetchWithAxios(url) {
   return response.data;
 }
 
+// Puppeteer for receive-sms.cc (Cloudflare blocks axios, so Puppeteer is required)
+async function fetchWithPuppeteerReceiveSms(url) {
+  const launchOptions = {
+    headless: true,
+    timeout: 90000,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--disable-blink-features=AutomationControlled'
+    ]
+  };
+
+  if (CHROME_PATH) {
+    launchOptions.executablePath = CHROME_PATH;
+  }
+
+  const browser = await puppeteer.launch(launchOptions);
+
+  try {
+    const page = await browser.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await page.setViewport({ width: 1366, height: 768 });
+
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await new Promise(r => setTimeout(r, 3000));
+
+    const messages = await page.evaluate(() => {
+      const results = [];
+      document.querySelectorAll('div.item').forEach((el, i) => {
+        if (i >= 10) return;
+        const from = el.querySelector('.form')?.innerText.trim() || 'Service';
+        const time = el.querySelector('.time')?.innerText.trim() || 'Recent';
+        const content = el.querySelector('.con')?.innerText.trim() || '';
+        if (content) {
+          results.push({ from, time, content });
+        }
+      });
+      return results;
+    });
+
+    return messages;
+  } finally {
+    await browser.close();
+  }
+}
+
 async function fetchMessages(num) {
   if (!num || !num.link) return null;
 
@@ -419,26 +467,16 @@ async function fetchMessages(num) {
   }
 
   if (num.source === 'receive-sms.cc') {
+    // receive-sms.cc blocks axios (403), so we MUST use Puppeteer
     try {
-      const html = await fetchWithAxios(num.link);
-      if (html) {
-        const $ = cheerio.load(html);
-        const messages = [];
-        $('div.item').each((i, element) => {
-          if (i >= 10) return false;
-          const from = $(element).find('.form').text().trim();
-          const time = $(element).find('.time').text().trim();
-          const content = $(element).find('.con').text().trim();
-          if (content) messages.push({ from, time, content });
-        });
-        if (messages.length > 0) {
-          log(`   ✅ Got ${messages.length} messages via HTML`);
-          messageCache.set(num.phone, { messages, time: Date.now() });
-          return messages;
-        }
+      const messages = await fetchWithPuppeteerReceiveSms(num.link);
+      if (messages && messages.length > 0) {
+        log(`   ✅ Got ${messages.length} messages via Puppeteer`);
+        messageCache.set(num.phone, { messages, time: Date.now() });
+        return messages;
       }
     } catch (e) {
-      log(`   ⚠️  HTML parse failed: ${e.message}`);
+      log(`   ⚠️  Puppeteer fetch failed: ${e.message}`);
     }
   }
 

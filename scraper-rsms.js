@@ -115,29 +115,43 @@ async function scrapeCountryPage(page, baseUrl, countrySlug, pageNum) {
 
   const numbers = await page.evaluate((slug) => {
     const result = [];
+    // First, find the phone from the URL (it's in the href)
     document.querySelectorAll('a').forEach(a => {
       const href = a.getAttribute('href') || '';
-      const regex = new RegExp(`\\/${slug}-Phone-Number\\/\\d+`);
-      if (regex.test(href)) {
-        const text = a.innerText;
-        const phoneMatch = text.match(/\+?\d[\d\s]{8,}/);
-        if (phoneMatch) {
-          const phone = phoneMatch[0].replace(/\s+/g, ' ').trim();
-          // Map slug to country name
-          const countryName = slug
-            .replace(/([A-Z])/g, ' $1')
-            .replace(/^./, c => c.toUpperCase())
-            .trim();
-
-          result.push({
-            country: countryName,
-            phone: phone,
-            smsCount: 'Live',
-            lastSms: 'Recent',
-            link: href.startsWith('http') ? href : `https://receive-sms.cc${href}`,
-            source: 'receive-sms.cc'
-          });
+      // Match /Country-Phone-Number/12345 (extract the number from URL)
+      const urlMatch = href.match(new RegExp(`\\/${slug}-Phone-Number\\/(\\d+)`));
+      if (urlMatch) {
+        const phoneFromUrl = urlMatch[1];
+        // Add the country code from the slug
+        const countryName = slug
+          .replace(/([A-Z])/g, ' $1')
+          .replace(/^./, c => c.toUpperCase())
+          .trim();
+        // Format phone based on country
+        let phone = '+' + phoneFromUrl;
+        // For better readability, add a space after country code
+        if (phoneFromUrl.length >= 10) {
+          // Try to detect country code (rough)
+          if (phoneFromUrl.startsWith('48')) phone = '+48 ' + phoneFromUrl.substring(2);
+          else if (phoneFromUrl.startsWith('31')) phone = '+31 ' + phoneFromUrl.substring(2);
+          else if (phoneFromUrl.startsWith('358')) phone = '+358 ' + phoneFromUrl.substring(3);
+          else if (phoneFromUrl.startsWith('1')) phone = '+1 ' + phoneFromUrl.substring(1);
+          else if (phoneFromUrl.startsWith('44')) phone = '+44 ' + phoneFromUrl.substring(2);
+          else if (phoneFromUrl.startsWith('33')) phone = '+33 ' + phoneFromUrl.substring(2);
+          else if (phoneFromUrl.startsWith('49')) phone = '+49 ' + phoneFromUrl.substring(2);
+          else if (phoneFromUrl.startsWith('34')) phone = '+34 ' + phoneFromUrl.substring(2);
+          else if (phoneFromUrl.startsWith('39')) phone = '+39 ' + phoneFromUrl.substring(2);
+          else if (phoneFromUrl.startsWith('7')) phone = '+7 ' + phoneFromUrl.substring(1);
         }
+
+        result.push({
+          country: countryName,
+          phone: phone,
+          smsCount: 'Live',
+          lastSms: 'Recent',
+          link: href.startsWith('http') ? href : `https://receive-sms.cc${href}`,
+          source: 'receive-sms.cc'
+        });
       }
     });
     return result;
