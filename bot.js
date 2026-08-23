@@ -219,7 +219,21 @@ async function fetchMessages(num) {
 
   log(`📩 Fetching SMS for ${num.phone} (source: ${num.source})...`);
 
-  // Try Puppeteer first
+  // For sms24.me - call the API directly (bypasses the ad gate!)
+  if (num.source === 'sms24.me' && num.link) {
+    try {
+      const messages = await fetchViaApi(num);
+      if (messages && messages.length > 0) {
+        log(`   ✅ Got ${messages.length} messages via API`);
+        messageCache.set(num.phone, { messages, time: Date.now() });
+        return messages;
+      }
+    } catch (e) {
+      log(`   ⚠️  API fetch failed: ${e.message}`);
+    }
+  }
+
+  // Fallback: try Puppeteer (in case we need to click the button)
   let html = null;
   try {
     html = await fetchWithPuppeteer(num.link);
@@ -227,7 +241,6 @@ async function fetchMessages(num) {
     log(`   ⚠️  Puppeteer failed: ${e.message}, trying axios fallback...`);
   }
 
-  // Fallback: try with axios + stealth headers
   if (!html) {
     try {
       html = await fetchWithAxios(num.link);
@@ -257,49 +270,85 @@ async function fetchMessages(num) {
         }
       });
     } else {
-      // sms24.me - look for code patterns
       const allText = $('body').text();
-
-      // Look for SMS messages in the page
-      $('p, div, span').each((i, element) => {
-        if (messages.length >= 5) return false;
-        const text = $(element).text().trim();
-        // Look for typical SMS message format
-        if (text.length > 15 && text.length < 300 &&
-            (text.match(/\d{4,}/) || text.toLowerCase().includes('code'))) {
-          // Avoid duplicates
-          if (!messages.find(m => m.content === text)) {
-            messages.push({
-              from: 'Service',
-              time: 'Recent',
-              content: text.substring(0, 200)
-            });
-          }
-        }
-      });
-
-      // If nothing found, try regex on full text
-      if (messages.length === 0) {
-        const codeRegex = /(?:code|Code|CODE)[:\s]*(\d{4,8})/g;
-        let match;
-        while ((match = codeRegex.exec(allText)) !== null && messages.length < 5) {
-          const start = Math.max(0, match.index - 50);
-          const end = Math.min(allText.length, match.index + 100);
-          const context = allText.substring(start, end).trim();
-          if (!messages.find(m => m.content === context)) {
-            messages.push({ from: 'Service', time: 'Unknown', content: context });
-          }
+      const codeRegex = /(?:code|Code|CODE)[:\s]*(\d{4,8})/g;
+      let match;
+      while ((match = codeRegex.exec(allText)) !== null && messages.length < 5) {
+        const start = Math.max(0, match.index - 50);
+        const end = Math.min(allText.length, match.index + 100);
+        const context = allText.substring(start, end).trim();
+        if (!messages.find(m => m.content === context)) {
+          messages.push({ from: 'Service', time: 'Unknown', content: context });
         }
       }
     }
 
-    log(`   ✅ Got ${messages.length} messages`);
+    log(`   ✅ Got ${messages.length} messages via HTML parse`);
     messageCache.set(num.phone, { messages, time: Date.now() });
     return messages;
   } catch (error) {
     log(`   ❌ Parse error: ${error.message}`);
     return null;
   }
+}
+
+// NEW: Call sms24.me's API directly - bypasses the ad gate completely!
+async function fetchViaApi(num) {
+  // num.link is like https://sms24.me/en/numbers/12393481596
+  // We need to convert to: https://sms24.me/api/messages/12393481596
+  const match = num.link.match(/\/numbers\/(\d+)/);
+  if (!match) {
+    throw new Error('Could not extract number from link');
+  }
+  const phoneNumber = match[1];
+  const apiUrl = `https://sms24.me/api/messages/${phoneNumber}`;
+
+  log(`   🔌 Calling API: ${apiUrl}`);
+
+  // Try POST first (what the JS does)
+  const response = await axios.post(apiUrl, {
+    page: 1
+  }, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'application/json, text/html, */*',
+      'Accept-Language': 'en-US,en;q=0.5',
+      'Content-Type': 'application/json',
+      'X-Requested-With': 'XMLHttpRequest',
+      'Origin': 'https://sms24.me',
+      'Referer': num.link
+    },
+    timeout: 30000
+  });
+
+  if (!response.data) {
+    throw new Error('Empty response');
+  }
+
+  // Response structure: { messages: [{...}, {...}] }
+  const rawMessages = response.data.messages || response.data.data || [];
+
+  if (!Array.isArray(rawMessages) || rawMessages.length === 0) {
+    log(`   API returned no messages`);
+    return [];
+  }
+
+  // Normalize the messages
+  const messages = rawMessages.slice(0, 10).map(m => {
+    // Try to find the code in the message body
+    const body = m.body || m.message || m.text || m.content || '';
+    const codeMatch = body.match(/\d{4,8}/);
+    const code = codeMatch ? codeMatch[0] : null;
+
+    return {
+      from: m.from || m.sender || m.service || 'Service',
+      time: m.time || m.received_at || m.created_at || 'Recent',
+      content: body,
+      code: code
+    };
+  }).filter(m => m.content); // Only keep messages with content
+
+  return messages;
 }
 
 // Puppeteer fetch (with retry)
@@ -500,7 +549,10 @@ bot.on('callback_query', async (callback) => {
           messages.slice(0, 5).forEach((m, i) => {
             text += `\n*${i + 1}.* ${m.from}\n`;
             if (m.time) text += `   _${m.time}_\n`;
-            text += `   "${m.content}"\n`;
+            if (m.code) {
+              text += `   🔐 Code: \`${m.code}\`\n`;
+            }
+            text += `   "${m.content.substring(0, 150)}${m.content.length > 150 ? '...' : ''}"\n`;
           });
           text += `\n✅ _Fresh code detected - posted to channel!_`;
         } else {
@@ -509,9 +561,12 @@ bot.on('callback_query', async (callback) => {
           messages.slice(0, 3).forEach((m, i) => {
             text += `\n*${i + 1}.* ${m.from}\n`;
             if (m.time) text += `   _${m.time}_\n`;
+            if (m.code) {
+              text += `   🔐 Code: \`${m.code}\`\n`;
+            }
             text += `   "${m.content.substring(0, 100)}${m.content.length > 100 ? '...' : ''}"\n`;
           });
-          text += `\n⚠️ _No new code received in the last ${FRESH_WINDOW_MINUTES} minutes. Wait and try again._`;
+          text += `\n⚠️ _No new code in the last ${FRESH_WINDOW_MINUTES} minutes. Try again later._`;
         }
       }
 
