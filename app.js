@@ -223,13 +223,27 @@ const CACHE_TTL = 30 * 1000;
 
 async function fetchWithPuppeteerClick(url) {
   const launchOptions = {
-    headless: 'new',
+    headless: true,  // Use old headless (lighter, more compatible with constrained envs)
+    timeout: 90000,  // Wait up to 90s for Chrome to start (Render free can be slow)
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
-      '--disable-blink-features=AutomationControlled'
-    ]
+      '--disable-gpu',
+      '--disable-software-rasterizer',
+      '--disable-extensions',
+      '--disable-background-networking',
+      '--disable-default-apps',
+      '--disable-sync',
+      '--disable-translate',
+      '--mute-audio',
+      '--no-first-run',
+      '--disable-blink-features=AutomationControlled',
+      '--memory-pressure-off',
+      '--max-old-space-size=512'
+    ],
+    dumpio: false,
+    protocolTimeout: 60000
   };
 
   if (CHROME_PATH) {
