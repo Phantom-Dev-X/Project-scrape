@@ -268,7 +268,22 @@ async function fetchWithPuppeteerClick(url) {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await new Promise(r => setTimeout(r, 3000));
 
-    // Click the "Show SMS messages" button - then wait for messages to appear
+    // Set localStorage to bypass the ad gate (sms24 uses "direct" mode if recently rewarded)
+    try {
+      await page.evaluate(() => {
+        // Set the rewarded timestamp to "just now" so the site uses direct mode (no ad)
+        localStorage.setItem('sms24_rewarded_seen_at', String(Date.now()));
+      });
+      log(`   🔓 Set localStorage to skip ad gate`);
+
+      // Reload to apply the localStorage change
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
+      await new Promise(r => setTimeout(r, 3000));
+    } catch (e) {
+      log(`   ⚠️  Could not set localStorage: ${e.message}`);
+    }
+
+    // Now look for and click the button
     try {
       const buttonClicked = await page.evaluate(() => {
         const btn = document.querySelector('.sms-load-button') ||
@@ -283,9 +298,9 @@ async function fetchWithPuppeteerClick(url) {
       if (buttonClicked) {
         log(`   🖱️  Clicked 'Show SMS messages' button`);
 
-        // Wait for messages to actually appear in the DOM (poll every 1s for up to 30s)
+        // Wait for messages to actually appear in the DOM (poll every 1s for up to 60s)
         let messagesLoaded = false;
-        for (let i = 0; i < 30; i++) {
+        for (let i = 0; i < 60; i++) {
           await new Promise(r => setTimeout(r, 1000));
           const count = await page.evaluate(() => {
             const list = document.querySelector('[data-messages-list]');
@@ -300,7 +315,7 @@ async function fetchWithPuppeteerClick(url) {
         }
 
         if (!messagesLoaded) {
-          log(`   ⚠️  Messages didn't appear after 30s, trying to extract anyway`);
+          log(`   ⚠️  Messages didn't appear after 60s, trying to extract anyway`);
         }
       } else {
         log(`   ℹ️  No button found`);
