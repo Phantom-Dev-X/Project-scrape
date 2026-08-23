@@ -3,7 +3,7 @@
 // All in ONE process (no child spawn - fixes Chrome path issues)
 
 const express = require('express');
-const { scrapeAll } = require('./scraper-sms24');
+const { scrapeAll } = require('./scraper-rsms');
 const fs = require('fs');
 const https = require('https');
 const http = require('http');
@@ -268,22 +268,17 @@ async function fetchWithPuppeteerClick(url) {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await new Promise(r => setTimeout(r, 3000));
 
-    // Set localStorage to bypass the ad gate (sms24 uses "direct" mode if recently rewarded)
+    // Set localStorage to mark ad as "already watched" (sms24 uses this to skip the gate)
     try {
       await page.evaluate(() => {
-        // Set the rewarded timestamp to "just now" so the site uses direct mode (no ad)
         localStorage.setItem('sms24_rewarded_seen_at', String(Date.now()));
       });
       log(`   🔓 Set localStorage to skip ad gate`);
-
-      // Reload to apply the localStorage change
-      await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
-      await new Promise(r => setTimeout(r, 3000));
     } catch (e) {
       log(`   ⚠️  Could not set localStorage: ${e.message}`);
     }
 
-    // Now look for and click the button
+    // Now look for and click the button - NO RELOAD (reloading broke it)
     try {
       const buttonClicked = await page.evaluate(() => {
         const btn = document.querySelector('.sms-load-button') ||
