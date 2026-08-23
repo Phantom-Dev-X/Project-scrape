@@ -252,9 +252,9 @@ async function fetchWithPuppeteerClick(url) {
 
     log(`   🌐 Navigating to: ${url}`);
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await new Promise(r => setTimeout(r, 2000));
+    await new Promise(r => setTimeout(r, 3000));
 
-    // Click the "Show SMS messages" button
+    // Click the "Show SMS messages" button - then wait for messages to appear
     try {
       const buttonClicked = await page.evaluate(() => {
         const btn = document.querySelector('.sms-load-button') ||
@@ -268,7 +268,26 @@ async function fetchWithPuppeteerClick(url) {
 
       if (buttonClicked) {
         log(`   🖱️  Clicked 'Show SMS messages' button`);
-        await new Promise(r => setTimeout(r, 5000));
+
+        // Wait for messages to actually appear in the DOM (poll every 1s for up to 30s)
+        let messagesLoaded = false;
+        for (let i = 0; i < 30; i++) {
+          await new Promise(r => setTimeout(r, 1000));
+          const count = await page.evaluate(() => {
+            const list = document.querySelector('[data-messages-list]');
+            if (!list) return 0;
+            return list.querySelectorAll(':scope > *').length;
+          });
+          if (count > 0) {
+            log(`   📩 Messages appeared after ${i + 1}s (${count} items)`);
+            messagesLoaded = true;
+            break;
+          }
+        }
+
+        if (!messagesLoaded) {
+          log(`   ⚠️  Messages didn't appear after 30s, trying to extract anyway`);
+        }
       } else {
         log(`   ℹ️  No button found`);
         await new Promise(r => setTimeout(r, 2000));
@@ -283,7 +302,15 @@ async function fetchWithPuppeteerClick(url) {
       if (list) {
         list.querySelectorAll(':scope > *').forEach(item => {
           const text = item.textContent.trim();
-          if (text) results.push({ from: 'Service', time: 'Recent', content: text });
+          if (text) {
+            // Try to extract structured data
+            const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+            const from = lines[0] || 'Service';
+            const time = lines.find(l => /\d+\s+(minute|hour|day|month|year|second)s?\s+ago/i.test(l)) || 'Recent';
+            const content = lines.filter(l => l !== from && l !== time).join(' ').trim() || text;
+
+            results.push({ from, time, content });
+          }
         });
       }
       if (results.length === 0) {
