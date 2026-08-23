@@ -121,6 +121,13 @@ async function scrapeAll() {
   fs.writeFileSync(OUTPUT_FILE, JSON.stringify(unique, null, 2));
   log(`💾 Saved ${unique.length} unique numbers to ${OUTPUT_FILE}`);
 
+  // Also clear old sms24.me data if it exists
+  const oldFile = 'data-sms24.json';
+  if (fs.existsSync(oldFile)) {
+    fs.unlinkSync(oldFile);
+    log(`🗑️  Removed old ${oldFile}`);
+  }
+
   // Print by country
   const byCountry = {};
   unique.forEach(n => {

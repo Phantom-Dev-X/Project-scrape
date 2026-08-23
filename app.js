@@ -754,8 +754,11 @@ async function runScraper() {
   try {
     const newNumbers = await scrapeAll();
     if (newNumbers && newNumbers.length > 0) {
-      await supabaseStore.saveNumbers(newNumbers);
-      log(`💾 Saved ${newNumbers.length} numbers`);
+      // Clear old data first (different source now)
+      await supabaseStore.clearAll();
+      // Save fresh data
+      const result = await supabaseStore.saveNumbers(newNumbers);
+      log(`💾 Saved ${result.saved} numbers (cleared old data first)`);
     }
     lastScrape = new Date().toISOString();
     totalNumbers = await countNumbers();
