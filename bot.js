@@ -7,11 +7,58 @@
 
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
+const path = require('path');
 const puppeteer = require('puppeteer');
 const cheerio = require('cheerio');
 const axios = require('axios');
 const supabaseStore = require('./supabase-store');
 const { scrapeAll } = require('./scraper-sms24');
+
+// Find Chrome executable path (handles both local and Render)
+function findChromePath() {
+  // 1. Check environment variable (can be set in Render)
+  if (process.env.CHROME_PATH && fs.existsSync(process.env.CHROME_PATH)) {
+    return process.env.CHROME_PATH;
+  }
+
+  // 2. Check common Puppeteer cache locations
+  const possiblePaths = [
+    '/opt/render/.cache/puppeteer/chrome/linux-152.0.7977.42/chrome-linux64/chrome',
+    path.join(process.env.HOME || '/root', '.cache/puppeteer/chrome/linux-152.0.7977.42/chrome-linux64/chrome'),
+    path.join(process.env.HOME || '/root', '.cache/puppeteer/chrome'),
+  ];
+
+  for (const p of possiblePaths) {
+    try {
+      if (fs.existsSync(p)) {
+        return p;
+      }
+    } catch (e) {}
+  }
+
+  // 3. Try to find any chrome-linux64/chrome in the cache
+  try {
+    const cacheDir = path.join(process.env.HOME || '/root', '.cache/puppeteer/chrome');
+    if (fs.existsSync(cacheDir)) {
+      const versions = fs.readdirSync(cacheDir);
+      for (const ver of versions) {
+        const chromePath = path.join(cacheDir, ver, 'chrome-linux64', 'chrome');
+        if (fs.existsSync(chromePath)) {
+          return chromePath;
+        }
+      }
+    }
+  } catch (e) {}
+
+  return null;
+}
+
+const CHROME_PATH = findChromePath();
+if (CHROME_PATH) {
+  console.log(`✅ Found Chrome at: ${CHROME_PATH}`);
+} else {
+  console.log(`⚠️  Chrome not found - will use Puppeteer defaults`);
+}
 
 // Token comes from environment variable - NEVER hardcode it
 const token = process.env.BOT_TOKEN;
@@ -266,7 +313,7 @@ async function fetchMessages(num) {
 
 // Puppeteer that clicks the "Show SMS messages" button to bypass ad gate
 async function fetchWithPuppeteerClick(url) {
-  const browser = await puppeteer.launch({
+  const launchOptions = {
     headless: 'new',  // new headless mode
     args: [
       '--no-sandbox',
@@ -274,7 +321,14 @@ async function fetchWithPuppeteerClick(url) {
       '--disable-dev-shm-usage',
       '--disable-blink-features=AutomationControlled'
     ]
-  });
+  };
+
+  // If we found Chrome explicitly, use it
+  if (CHROME_PATH) {
+    launchOptions.executablePath = CHROME_PATH;
+  }
+
+  const browser = await puppeteer.launch(launchOptions);
 
   try {
     const page = await browser.newPage();
