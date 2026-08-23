@@ -120,7 +120,16 @@ async function loadData() {
   if (isLoading) return;
   isLoading = true;
   try {
-    data = await supabaseStore.getAllNumbers();
+    let rawData = await supabaseStore.getAllNumbers();
+
+    // Filter OUT old sms24.me numbers (we switched to receive-sms.cc)
+    const beforeFilter = rawData.length;
+    rawData = rawData.filter(n => n.source !== 'sms24.me');
+    if (rawData.length < beforeFilter) {
+      log(`🗑️  Filtered out ${beforeFilter - rawData.length} old sms24.me numbers`);
+    }
+
+    data = rawData;
     log(`📂 Loaded ${data.length} numbers from ${supabaseStore.isEnabled() ? 'Supabase' : 'local file'}`);
   } catch (e) {
     log(`❌ Load error: ${e.message}`);
@@ -766,11 +775,15 @@ async function runScraper() {
   try {
     const newNumbers = await scrapeAll();
     if (newNumbers && newNumbers.length > 0) {
-      // Clear old data first (different source now)
+      // Clear ALL old data from Supabase (different source now = receive-sms.cc)
+      log('🗑️  Clearing old Supabase data...');
       await supabaseStore.clearAll();
       // Save fresh data
       const result = await supabaseStore.saveNumbers(newNumbers);
-      log(`💾 Saved ${result.saved} numbers (cleared old data first)`);
+      log(`💾 Saved ${result.saved} numbers to Supabase (cleared old first)`);
+      // Reload bot's in-memory data immediately
+      await loadData();
+      log(`🔄 Bot reloaded with ${data.length} numbers`);
     }
     lastScrape = new Date().toISOString();
     totalNumbers = await countNumbers();
