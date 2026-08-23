@@ -50,7 +50,13 @@ async function loadData() {
 }
 
 // Run scraper and reload
+let isScraping = false;
 async function runScraperAndReload(chatId = null) {
+  if (isScraping) {
+    if (chatId) bot.sendMessage(chatId, '⚠️ Scraper is already running, please wait...');
+    return;
+  }
+  isScraping = true;
   const statusMsg = chatId ? await bot.sendMessage(chatId, '🔄 Running scraper... This may take 30-60 seconds.') : null;
 
   try {
@@ -80,6 +86,8 @@ async function runScraperAndReload(chatId = null) {
         chat_id: chatId, message_id: statusMsg.message_id
       });
     }
+  } finally {
+    isScraping = false;
   }
 }
 
@@ -378,12 +386,16 @@ bot.on('callback_query', async (callback) => {
                    `⏰ Last SMS: ${newNum.lastSms}\n\n` +
                    `👇 Tap *Get SMS* to load recent messages`;
 
-      await bot.editMessageText(text, {
-        chat_id: chatId,
-        message_id: messageId,
-        parse_mode: 'Markdown',
-        reply_markup: numberKeyboard(newNum.phone)
-      });
+      try {
+        await bot.editMessageText(text, {
+          chat_id: chatId,
+          message_id: messageId,
+          parse_mode: 'Markdown',
+          reply_markup: numberKeyboard(newNum.phone)
+        });
+      } catch (editError) {
+        if (!editError.message.includes('not modified')) throw editError;
+      }
       return;
     }
 
@@ -438,12 +450,20 @@ bot.on('callback_query', async (callback) => {
 
       text += `\n🔗 [View full inbox](${num.link})`;
 
-      await bot.editMessageText(text, {
-        chat_id: chatId,
-        message_id: messageId,
-        parse_mode: 'Markdown',
-        reply_markup: numberKeyboard(phone)
-      });
+      try {
+        await bot.editMessageText(text, {
+          chat_id: chatId,
+          message_id: messageId,
+          parse_mode: 'Markdown',
+          reply_markup: numberKeyboard(phone)
+        });
+      } catch (editError) {
+        // If message is not modified, that's okay - just send a fresh one
+        if (!editError.message.includes('not modified')) {
+          throw editError;
+        }
+        log(`   Message not modified, ignoring`);
+      }
       return;
     }
   } catch (error) {
