@@ -20,18 +20,13 @@ function log(msg) {
 }
 
 function countNumbers() {
-  let count = 0;
   try {
     if (fs.existsSync('data-sms24.json')) {
       const data = JSON.parse(fs.readFileSync('data-sms24.json', 'utf-8'));
-      count += data.length;
-    }
-    if (fs.existsSync('data.json')) {
-      const data = JSON.parse(fs.readFileSync('data.json', 'utf-8'));
-      count += data.length;
+      return data.length;
     }
   } catch (e) {}
-  return count;
+  return 0;
 }
 
 // =================== WEBSITE ===================
@@ -167,9 +162,6 @@ app.get('/stats', (req, res) => {
     let data = [];
     if (fs.existsSync('data-sms24.json')) {
       data = data.concat(JSON.parse(fs.readFileSync('data-sms24.json', 'utf-8')));
-    }
-    if (fs.existsSync('data.json')) {
-      data = data.concat(JSON.parse(fs.readFileSync('data.json', 'utf-8')));
     }
     const countries = {};
     data.forEach(n => {

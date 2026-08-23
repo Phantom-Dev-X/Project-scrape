@@ -27,41 +27,15 @@ const FRESH_WINDOW_MINUTES = 5;
 // Load data from files
 let data = [];
 function loadData() {
-  let combined = [];
-
-  // Load receive-sms.cc data (PRIMARY - has visible time stamps)
+  // Load sms24.me data (the only source now)
   try {
-    const r1 = JSON.parse(fs.readFileSync('data.json', 'utf-8'));
-    const cleaned1 = r1.map(n => ({
-      ...n,
-      country: n.country.replace(' Phone Number', ''),
-      source: 'receive-sms.cc'
-    }));
-    combined = combined.concat(cleaned1);
-    console.log(`📂 Loaded ${r1.length} from data.json`);
+    const r = JSON.parse(fs.readFileSync('data-sms24.json', 'utf-8'));
+    data = r;
+    console.log(`📂 Loaded ${data.length} from data-sms24.json`);
   } catch (e) {
-    // data.json is optional
+    console.log('⚠️  data-sms24.json not found or empty. Run the scraper first!');
+    data = [];
   }
-
-  // Load sms24.me data
-  try {
-    const r2 = JSON.parse(fs.readFileSync('data-sms24.json', 'utf-8'));
-    combined = combined.concat(r2);
-    console.log(`📂 Loaded ${r2.length} from data-sms24.json`);
-  } catch (e) {
-    // not required
-  }
-
-  // Remove duplicates
-  const seen = new Set();
-  combined = combined.filter(n => {
-    if (seen.has(n.phone)) return false;
-    seen.add(n.phone);
-    return true;
-  });
-
-  data = combined;
-  console.log(`📊 Total unique numbers: ${data.length}`);
 }
 loadData();
 

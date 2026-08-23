@@ -1,5 +1,7 @@
 // scraper-sms24.js
-// Scrapes ALL pages of ALL countries from sms24.me with stealth headers
+// Scrapes pages from SELECTED countries on sms24.me
+// Currently configured for: Poland, Netherlands, Finland (3 countries)
+// Add more countries by adding to the COUNTRIES list below
 
 const axios = require('axios');
 const cheerio = require('cheerio');
@@ -8,59 +10,12 @@ const fs = require('fs');
 const BASE = 'https://sms24.me/en';
 const OUTPUT_FILE = 'data-sms24.json';
 
-const COUNTRY_CODES = {
-  'United States': 'us',
-  'United Kingdom': 'gb',
-  'Canada': 'ca',
-  'Germany': 'de',
-  'France': 'fr',
-  'Belgium': 'be',
-  'Finland': 'fi',
-  'Netherlands': 'nl',
-  'Sweden': 'se',
-  'Italy': 'it',
-  'Spain': 'es',
-  'Australia': 'au',
-  'India': 'in',
-  'China': 'cn',
-  'Brazil': 'br',
-  'Mexico': 'mx',
-  'Poland': 'pl',
-  'Switzerland': 'ch',
-  'Austria': 'at',
-  'Denmark': 'dk',
-  'Norway': 'no',
-  'Ireland': 'ie',
-  'Portugal': 'pt',
-  'Greece': 'gr',
-  'Czech Republic': 'cz',
-  'Romania': 'ro',
-  'Hungary': 'hu',
-  'Israel': 'il',
-  'South Africa': 'za',
-  'Japan': 'jp',
-  'South Korea': 'kr',
-  'New Zealand': 'nz',
-  'Singapore': 'sg',
-  'Hong Kong': 'hk',
-  'Taiwan': 'tw',
-  'Thailand': 'th',
-  'Indonesia': 'id',
-  'Malaysia': 'my',
-  'Philippines': 'ph',
-  'Vietnam': 'vn',
-  'Argentina': 'ar',
-  'Chile': 'cl',
-  'Colombia': 'co',
-  'Turkey': 'tr',
-  'United Arab Emirates': 'ae',
-  'Saudi Arabia': 'sa',
-  'Egypt': 'eg',
-  'Nigeria': 'ng',
-  'Kenya': 'ke',
-  'Russia': 'ru',
-  'Ukraine': 'ua'
-};
+// 🎯 ONLY SCRAPE THESE COUNTRIES (3 for now, can add more later)
+const COUNTRIES = [
+  { name: 'Poland', code: 'pl' },
+  { name: 'Netherlands', code: 'nl' },
+  { name: 'Finland', code: 'fi' }
+];
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -130,7 +85,7 @@ async function scrapeCountryPage(countryName, code, page = 1, retries = 3) {
           const phone = '+' + phoneRaw;
 
           const text = $(element).text();
-          const timeMatch = text.match(/(\d+\s*(minute|hour|day|week|month)s?\s*ago)/i);
+          const timeMatch = text.match(/(\d+\s*(minute|hour|day|week|month)s?\s+ago)/i);
           const lastSms = timeMatch ? timeMatch[0] : 'Recent';
 
           numbers.push({
@@ -200,16 +155,16 @@ async function scrapeCountry(countryName, code, maxPages = 5) {
 
 async function scrapeAll() {
   log('🚀 ============================================');
-  log('🚀 Starting FULL scrape of sms24.me (stealth mode)');
+  log('🚀 Starting scrape of SELECTED countries');
+  log(`🚀 Countries: ${COUNTRIES.map(c => c.name).join(', ')}`);
   log('🚀 ============================================');
   const startTime = Date.now();
 
   const allNumbers = [];
-  const countries = Object.entries(COUNTRY_CODES);
-  const totalCountries = countries.length;
+  const totalCountries = COUNTRIES.length;
 
-  for (let i = 0; i < countries.length; i++) {
-    const [countryName, code] = countries[i];
+  for (let i = 0; i < COUNTRIES.length; i++) {
+    const { name: countryName, code } = COUNTRIES[i];
     log(`\n📍 [${i + 1}/${totalCountries}] Processing ${countryName}...`);
 
     const nums = await scrapeCountry(countryName, code);
@@ -217,12 +172,7 @@ async function scrapeAll() {
 
     log(`📊 Progress: ${i + 1}/${totalCountries} countries done, ${allNumbers.length} total numbers so far`);
 
-    if ((i + 1) % 5 === 0) {
-      fs.writeFileSync(OUTPUT_FILE, JSON.stringify(allNumbers, null, 2));
-      log(`💾 Progress saved: ${allNumbers.length} numbers to ${OUTPUT_FILE}`);
-    }
-
-    if (i < countries.length - 1) {
+    if (i < COUNTRIES.length - 1) {
       await delay(2000 + Math.floor(Math.random() * 3000));
     }
   }
