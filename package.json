@@ -5,7 +5,8 @@
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
-    "scrape": "node scraper-sms24.js"
+    "scrape": "node scraper-sms24.js",
+    "postinstall": "puppeteer browsers install chrome"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

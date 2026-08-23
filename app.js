@@ -62,12 +62,31 @@ function findChromePath() {
   return null;
 }
 
-const CHROME_PATH = findChromePath();
-if (CHROME_PATH) {
-  log(`✅ Found Chrome at: ${CHROME_PATH}`);
-} else {
-  log(`⚠️  Chrome not found in any location`);
+// Install Chrome if missing (self-heal at startup)
+async function ensureChromeInstalled() {
+  if (CHROME_PATH) {
+    log(`✅ Found Chrome at: ${CHROME_PATH}`);
+    return CHROME_PATH;
+  }
+
+  log('⚠️  Chrome not found, attempting to install...');
+
+  const { execSync } = require('child_process');
+  try {
+    log('   Running: npx puppeteer browsers install chrome');
+    execSync('npx puppeteer browsers install chrome', {
+      stdio: 'inherit',
+      timeout: 180000  // 3 min max
+    });
+    log('   ✅ Chrome installed!');
+    return findChromePath();
+  } catch (e) {
+    log(`   ❌ Chrome install failed: ${e.message}`);
+    return null;
+  }
 }
+
+let CHROME_PATH = findChromePath();
 
 // ====================================================
 // 2. LOAD TELEGRAM BOT
@@ -728,6 +747,9 @@ async function main() {
   log('🚀 ============================================');
   log('🚀 ALL-IN-ONE: web + scraper + bot + self-ping');
   log('🚀 ============================================');
+
+  // Ensure Chrome is installed (self-heal if missing)
+  CHROME_PATH = await ensureChromeInstalled();
 
   // Load data + start bot
   await loadData();
