@@ -219,76 +219,152 @@ async function fetchMessages(num) {
 
   log(`📩 Fetching SMS for ${num.phone} (source: ${num.source})...`);
 
-  // For sms24.me - call the API directly (bypasses the ad gate!)
-  if (num.source === 'sms24.me' && num.link) {
+  // Method 1: Puppeteer with button click (most reliable, beats ad gate)
+  if (num.source === 'sms24.me') {
     try {
-      const messages = await fetchViaApi(num);
+      const messages = await fetchWithPuppeteerClick(num.link);
       if (messages && messages.length > 0) {
-        log(`   ✅ Got ${messages.length} messages via API`);
+        log(`   ✅ Got ${messages.length} messages via Puppeteer+click`);
         messageCache.set(num.phone, { messages, time: Date.now() });
         return messages;
       }
     } catch (e) {
-      log(`   ⚠️  API fetch failed: ${e.message}`);
+      log(`   ⚠️  Puppeteer+click failed: ${e.message}`);
     }
   }
 
-  // Fallback: try Puppeteer (in case we need to click the button)
-  let html = null;
-  try {
-    html = await fetchWithPuppeteer(num.link);
-  } catch (e) {
-    log(`   ⚠️  Puppeteer failed: ${e.message}, trying axios fallback...`);
-  }
-
-  if (!html) {
+  // Method 2: receive-sms.cc has clean HTML, just parse it
+  if (num.source === 'receive-sms.cc') {
     try {
-      html = await fetchWithAxios(num.link);
-    } catch (e) {
-      log(`   ❌ Axios fallback also failed: ${e.message}`);
-      return null;
-    }
-  }
-
-  if (!html) {
-    log(`   ❌ Could not fetch ${num.link}`);
-    return null;
-  }
-
-  try {
-    const $ = cheerio.load(html);
-    const messages = [];
-
-    if (num.source === 'receive-sms.cc') {
-      $('div.item').each((i, element) => {
-        if (i >= 10) return false;
-        const from = $(element).find('.form').text().trim();
-        const time = $(element).find('.time').text().trim();
-        const content = $(element).find('.con').text().trim();
-        if (content) {
-          messages.push({ from, time, content });
-        }
-      });
-    } else {
-      const allText = $('body').text();
-      const codeRegex = /(?:code|Code|CODE)[:\s]*(\d{4,8})/g;
-      let match;
-      while ((match = codeRegex.exec(allText)) !== null && messages.length < 5) {
-        const start = Math.max(0, match.index - 50);
-        const end = Math.min(allText.length, match.index + 100);
-        const context = allText.substring(start, end).trim();
-        if (!messages.find(m => m.content === context)) {
-          messages.push({ from: 'Service', time: 'Unknown', content: context });
+      const html = await fetchWithAxios(num.link);
+      if (html) {
+        const $ = cheerio.load(html);
+        const messages = [];
+        $('div.item').each((i, element) => {
+          if (i >= 10) return false;
+          const from = $(element).find('.form').text().trim();
+          const time = $(element).find('.time').text().trim();
+          const content = $(element).find('.con').text().trim();
+          if (content) {
+            messages.push({ from, time, content });
+          }
+        });
+        if (messages.length > 0) {
+          log(`   ✅ Got ${messages.length} messages via HTML parse`);
+          messageCache.set(num.phone, { messages, time: Date.now() });
+          return messages;
         }
       }
+    } catch (e) {
+      log(`   ⚠️  HTML parse failed: ${e.message}`);
+    }
+  }
+
+  log(`   ❌ Could not fetch messages for ${num.phone}`);
+  return null;
+}
+
+// Puppeteer that clicks the "Show SMS messages" button to bypass ad gate
+async function fetchWithPuppeteerClick(url) {
+  const browser = await puppeteer.launch({
+    headless: 'new',  // new headless mode
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-blink-features=AutomationControlled'
+    ]
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await page.setViewport({ width: 1366, height: 768 });
+
+    // Set extra headers to look more like a real browser
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+    });
+
+    log(`   🌐 Navigating to: ${url}`);
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+
+    // Wait for the page to load
+    await new Promise(r => setTimeout(r, 2000));
+
+    // Try to find and click the "Show SMS messages" button
+    try {
+      const buttonClicked = await page.evaluate(() => {
+        // Find button by class or text
+        const btn = document.querySelector('.sms-load-button') ||
+                    document.querySelector('button[class*="sms-load"]') ||
+                    Array.from(document.querySelectorAll('button')).find(b =>
+                      b.textContent.includes('Show SMS') ||
+                      b.textContent.includes('Load')
+                    );
+        if (btn) {
+          btn.click();
+          return true;
+        }
+        return false;
+      });
+
+      if (buttonClicked) {
+        log(`   🖱️  Clicked 'Show SMS messages' button`);
+        // Wait for messages to load via API
+        await new Promise(r => setTimeout(r, 5000));
+      } else {
+        log(`   ℹ️  No button found, checking if messages already loaded`);
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    } catch (e) {
+      log(`   ⚠️  Button click failed: ${e.message}`);
     }
 
-    log(`   ✅ Got ${messages.length} messages via HTML parse`);
-    messageCache.set(num.phone, { messages, time: Date.now() });
+    // Now extract the messages from the rendered page
+    const messages = await page.evaluate(() => {
+      const results = [];
+
+      // Method 1: Look for messages in data-messages-list children
+      const list = document.querySelector('[data-messages-list]');
+      if (list) {
+        const items = list.querySelectorAll(':scope > *');
+        items.forEach(item => {
+          const text = item.textContent.trim();
+          if (text) {
+            results.push({
+              from: 'Service',
+              time: 'Recent',
+              content: text
+            });
+          }
+        });
+      }
+
+      // Method 2: Look for any text containing "code" or numbers
+      if (results.length === 0) {
+        const allText = document.body.innerText;
+        // Try to find code patterns
+        const codeRegex = /(?:code|Code|CODE)[:\s]*(\d{4,8})/g;
+        let match;
+        while ((match = codeRegex.exec(allText)) !== null) {
+          const start = Math.max(0, match.index - 50);
+          const end = Math.min(allText.length, match.index + 100);
+          const context = allText.substring(start, end).trim();
+          if (context && !results.find(r => r.content === context)) {
+            results.push({ from: 'Service', time: 'Recent', content: context });
+            if (results.length >= 5) break;
+          }
+        }
+      }
+
+      return results.slice(0, 10);
+    });
+
     return messages;
-  } catch (error) {
-    log(`   ❌ Parse error: ${error.message}`);
-    return null;
+  } finally {
+    await browser.close();
   }
 }
 
