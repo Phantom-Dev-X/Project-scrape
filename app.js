@@ -396,32 +396,56 @@ async function fetchWithAxios(url) {
 }
 
 // Puppeteer for receive-sms.cc (Cloudflare blocks axios, so Puppeteer is required)
-async function fetchWithPuppeteerReceiveSms(url) {
-  const launchOptions = {
-    headless: true,
-    timeout: 90000,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--disable-blink-features=AutomationControlled'
-    ]
-  };
+// Uses a SHARED browser instance for speed (no re-launch per request)
+let sharedBrowser = null;
+let sharedBrowserLastUsed = 0;
+const BROWSER_IDLE_TIMEOUT = 60 * 1000; // Close browser after 60s idle
 
-  if (CHROME_PATH) {
-    launchOptions.executablePath = CHROME_PATH;
+async function getSharedBrowser() {
+  const now = Date.now();
+
+  // Close if idle too long
+  if (sharedBrowser && (now - sharedBrowserLastUsed) > BROWSER_IDLE_TIMEOUT) {
+    try { await sharedBrowser.close(); } catch (e) {}
+    sharedBrowser = null;
   }
 
-  const browser = await puppeteer.launch(launchOptions);
+  // Launch if not running
+  if (!sharedBrowser) {
+    const launchOptions = {
+      headless: true,
+      timeout: 60000,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-blink-features=AutomationControlled'
+      ]
+    };
+    if (CHROME_PATH) {
+      launchOptions.executablePath = CHROME_PATH;
+    }
+    log(`🚀 Launching shared browser...`);
+    sharedBrowser = await puppeteer.launch(launchOptions);
+  }
+
+  sharedBrowserLastUsed = now;
+  return sharedBrowser;
+}
+
+async function fetchWithPuppeteerReceiveSms(url) {
+  const browser = await getSharedBrowser();
 
   try {
     const page = await browser.newPage();
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     await page.setViewport({ width: 1366, height: 768 });
 
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await new Promise(r => setTimeout(r, 3000));
+    // Use 'load' instead of 'domcontentloaded' for faster return
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    // Shorter wait - receive-sms.cc has no ad gate, messages load fast
+    await new Promise(r => setTimeout(r, 1500));
 
     const messages = await page.evaluate(() => {
       const results = [];
@@ -437,9 +461,15 @@ async function fetchWithPuppeteerReceiveSms(url) {
       return results;
     });
 
+    await page.close();
     return messages;
-  } finally {
-    await browser.close();
+  } catch (e) {
+    // If browser crashed, close it so next call launches fresh
+    if (sharedBrowser) {
+      try { await sharedBrowser.close(); } catch (err) {}
+      sharedBrowser = null;
+    }
+    throw e;
   }
 }
 
