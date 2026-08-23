@@ -196,22 +196,6 @@ app.get('/rescrape', async (req, res) => {
   runScraper();
 });
 
-app.get('/admin', async (req, res) => {
-  try {
-    const sudoStore = require('./sudo-store');
-    const sudoList = await sudoStore.list();
-    res.json({
-      owner_id: process.env.OWNER_ID || 'not set (use .claim in Telegram)',
-      sudo_count: sudoList.length,
-      sudo_users: sudoList,
-      storage: process.env.SUPABASE_URL ? 'supabase' : 'local-disk',
-      supabase_configured: !!process.env.SUPABASE_URL
-    });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
 // =================== SCRAPER ===================
 
 async function runScraper() {
