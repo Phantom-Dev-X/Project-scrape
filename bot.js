@@ -9,6 +9,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
 const puppeteer = require('puppeteer');
 const cheerio = require('cheerio');
+const axios = require('axios');
 const supabaseStore = require('./supabase-store');
 const { scrapeAll } = require('./scraper-sms24');
 
@@ -218,35 +219,36 @@ async function fetchMessages(num) {
 
   log(`📩 Fetching SMS for ${num.phone} (source: ${num.source})...`);
 
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--single-process',
-      '--no-zygote'
-    ]
-  });
+  // Try Puppeteer first
+  let html = null;
+  try {
+    html = await fetchWithPuppeteer(num.link);
+  } catch (e) {
+    log(`   ⚠️  Puppeteer failed: ${e.message}, trying axios fallback...`);
+  }
+
+  // Fallback: try with axios + stealth headers
+  if (!html) {
+    try {
+      html = await fetchWithAxios(num.link);
+    } catch (e) {
+      log(`   ❌ Axios fallback also failed: ${e.message}`);
+      return null;
+    }
+  }
+
+  if (!html) {
+    log(`   ❌ Could not fetch ${num.link}`);
+    return null;
+  }
 
   try {
-    const page = await browser.newPage();
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-    await page.setViewport({ width: 1366, height: 768 });
-
-    await page.goto(num.link, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await new Promise(r => setTimeout(r, 2000));
-
-    const html = await page.content();
     const $ = cheerio.load(html);
-
     const messages = [];
 
     if (num.source === 'receive-sms.cc') {
-      // receive-sms.cc has clean structure: .form, .time, .con
       $('div.item').each((i, element) => {
-        if (i >= 10) return false;  // grab up to 10 for flexibility
+        if (i >= 10) return false;
         const from = $(element).find('.form').text().trim();
         const time = $(element).find('.time').text().trim();
         const content = $(element).find('.con').text().trim();
@@ -255,15 +257,39 @@ async function fetchMessages(num) {
         }
       });
     } else {
-      // sms24.me fallback
+      // sms24.me - look for code patterns
       const allText = $('body').text();
-      const codeRegex = /(?:code|Code|CODE)[:\s]*(\d{4,8})/g;
-      let match;
-      while ((match = codeRegex.exec(allText)) !== null && messages.length < 5) {
-        const start = Math.max(0, match.index - 50);
-        const end = Math.min(allText.length, match.index + 100);
-        const context = allText.substring(start, end).trim();
-        messages.push({ from: 'Service', time: 'Unknown', content: context });
+
+      // Look for SMS messages in the page
+      $('p, div, span').each((i, element) => {
+        if (messages.length >= 5) return false;
+        const text = $(element).text().trim();
+        // Look for typical SMS message format
+        if (text.length > 15 && text.length < 300 &&
+            (text.match(/\d{4,}/) || text.toLowerCase().includes('code'))) {
+          // Avoid duplicates
+          if (!messages.find(m => m.content === text)) {
+            messages.push({
+              from: 'Service',
+              time: 'Recent',
+              content: text.substring(0, 200)
+            });
+          }
+        }
+      });
+
+      // If nothing found, try regex on full text
+      if (messages.length === 0) {
+        const codeRegex = /(?:code|Code|CODE)[:\s]*(\d{4,8})/g;
+        let match;
+        while ((match = codeRegex.exec(allText)) !== null && messages.length < 5) {
+          const start = Math.max(0, match.index - 50);
+          const end = Math.min(allText.length, match.index + 100);
+          const context = allText.substring(start, end).trim();
+          if (!messages.find(m => m.content === context)) {
+            messages.push({ from: 'Service', time: 'Unknown', content: context });
+          }
+        }
       }
     }
 
@@ -271,11 +297,52 @@ async function fetchMessages(num) {
     messageCache.set(num.phone, { messages, time: Date.now() });
     return messages;
   } catch (error) {
-    log(`   ❌ Failed: ${error.message}`);
+    log(`   ❌ Parse error: ${error.message}`);
     return null;
+  }
+}
+
+// Puppeteer fetch (with retry)
+async function fetchWithPuppeteer(url) {
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu'
+    ]
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await page.setViewport({ width: 1366, height: 768 });
+
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await new Promise(r => setTimeout(r, 2000));
+
+    const html = await page.content();
+    return html;
   } finally {
     await browser.close();
   }
+}
+
+// Axios fallback (lighter, no Chrome needed)
+async function fetchWithAxios(url) {
+  const response = await axios.get(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.5',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Connection': 'keep-alive'
+    },
+    timeout: 30000,
+    maxRedirects: 5
+  });
+  return response.data;
 }
 
 // Post a fresh code to channel
