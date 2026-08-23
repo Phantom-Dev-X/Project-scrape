@@ -1,13 +1,11 @@
 {
   "name": "project-scrpar",
   "version": "1.0.0",
-  "description": "Telegram bot for free SMS verification numbers + web dashboard + Supabase persistence",
+  "description": "Telegram bot for free SMS verification numbers + web dashboard + Supabase persistence (all in one process)",
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
-    "bot": "node bot.js",
-    "scrape": "node scraper-sms24.js",
-    "postinstall": "puppeteer browsers install chrome"
+    "scrape": "node scraper-sms24.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
