@@ -1,10 +1,13 @@
 // app.js
 // Main entry: runs scraper FIRST (waits for it), then starts web + bot
+// Also self-pings to keep Render free tier awake
 
 const express = require('express');
 const { scrapeAll } = require('./scraper-sms24');
 const { spawn } = require('child_process');
 const fs = require('fs');
+const https = require('https');
+const http = require('http');
 const supabaseStore = require('./supabase-store');
 
 const app = express();
@@ -149,6 +152,8 @@ app.get('/ping', async (req, res) => {
     scraper: scrapingStatus,
     last_scrape: lastScrape,
     storage: supabaseStore.isEnabled() ? 'supabase' : 'local-file',
+    self_pings: pingCount,
+    last_self_ping: lastPingTime,
     timestamp: new Date().toISOString()
   });
 });
@@ -230,11 +235,53 @@ function startBot() {
   });
 }
 
+// =================== SELF-PINGER (keep Render awake) ===================
+
+let pingCount = 0;
+let lastPingTime = null;
+
+function selfPing() {
+  // Get our own URL from Render env var, or construct it
+  const url = process.env.RENDER_EXTERNAL_URL || process.env.SELF_URL;
+  if (!url) {
+    log('⚠️  Self-ping: RENDER_EXTERNAL_URL not set, skipping (Render injects this automatically)');
+    return;
+  }
+
+  pingCount++;
+  lastPingTime = new Date().toISOString();
+
+  const lib = url.startsWith('https') ? https : http;
+
+  const start = Date.now();
+  lib.get(url, { timeout: 10000 }, (res) => {
+    const duration = Date.now() - start;
+    log(`📡 Self-ping #${pingCount}: ${res.statusCode} (${duration}ms) - ${url}`);
+    // Consume response data to free memory
+    res.resume();
+  }).on('error', (err) => {
+    log(`⚠️  Self-ping failed: ${err.message}`);
+  });
+}
+
+function startSelfPinger() {
+  // Ping every 10 minutes (Render sleeps after 15 min of inactivity)
+  const intervalMs = 10 * 60 * 1000; // 10 minutes
+
+  log(`⏰ Starting self-pinger (every ${intervalMs / 60000} min) to prevent Render sleep`);
+
+  // Wait 30 seconds after startup before first ping (let things settle)
+  setTimeout(() => {
+    selfPing();
+    setInterval(selfPing, intervalMs);
+  }, 30000);
+}
+
 // =================== MAIN ===================
 
 async function main() {
   log('🚀 ============================================');
-  log('🚀 APP STARTING (web + scraper + bot)');
+  log('🚀 APP STARTING (web + scraper + bot + self-ping)');
   log('🚀 ============================================');
 
   // Start the website FIRST so Render detects the port
@@ -244,6 +291,11 @@ async function main() {
 
   // Start the bot
   startBot();
+
+  // Start self-pinger to keep Render awake
+  if (process.env.DISABLE_SELF_PING !== 'true') {
+    startSelfPinger();
+  }
 
   // Run scraper in background (don't block)
   if (process.env.RUN_SCRAPER_ON_START !== 'false') {
