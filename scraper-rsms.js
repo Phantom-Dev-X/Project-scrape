@@ -107,35 +107,60 @@ async function scrapeHomepage() {
 }
 
 async function scrapeAll() {
-  const allNumbers = await scrapeHomepage();
+  log('🚀 Scraping receive-sms.cc (3 scrapes to get more variety)...');
 
-  if (allNumbers.length === 0) {
+  // Load existing data
+  let existing = [];
+  try {
+    if (fs.existsSync(OUTPUT_FILE)) {
+      existing = JSON.parse(fs.readFileSync(OUTPUT_FILE, 'utf-8'));
+      log(`📂 Loaded ${existing.length} existing numbers from cache`);
+    }
+  } catch (e) {}
+
+  // Scrape multiple times (each scrape shows different numbers in homepage rotation)
+  const allNewNumbers = [];
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    log(`\n🔄 Scrape attempt ${attempt}/3...`);
+    const numbers = await scrapeHomepage();
+    log(`   Got ${numbers.length} numbers from this scrape`);
+
+    // Filter to preferred
+    const preferred = numbers.filter(n => PREFERRED_COUNTRIES.includes(n.country));
+    const others = numbers.filter(n => !PREFERRED_COUNTRIES.includes(n.country));
+    const sorted = [...preferred, ...others];
+
+    allNewNumbers.push(...sorted);
+
+    // Wait between scrapes
+    if (attempt < 3) {
+      await new Promise(r => setTimeout(r, 5000));
+    }
+  }
+
+  if (allNewNumbers.length === 0) {
     log('⚠️  No numbers found');
-    return [];
+    return existing;
   }
 
-  // Sort: preferred countries first, then others
-  const preferred = allNumbers.filter(n => PREFERRED_COUNTRIES.includes(n.country));
-  const others = allNumbers.filter(n => !PREFERRED_COUNTRIES.includes(n.country));
-  const numbers = [...preferred, ...others];
+  // Combine with existing, prefer fresh ones
+  const allCombined = [...allNewNumbers, ...existing];
 
-  log(`📊 Preferred: ${preferred.length}, Others: ${others.length}`);
-
-  if (numbers.length === 0) {
-    log('⚠️  No numbers');
-    return [];
-  }
-
-  // Dedupe
+  // Dedupe by phone
   const seen = new Set();
-  const unique = numbers.filter(n => {
+  const unique = allCombined.filter(n => {
     if (seen.has(n.phone)) return false;
     seen.add(n.phone);
     return true;
   });
 
-  fs.writeFileSync(OUTPUT_FILE, JSON.stringify(unique, null, 2));
-  log(`💾 Saved ${unique.length} unique numbers to ${OUTPUT_FILE}`);
+  // Sort: preferred first
+  const preferred = unique.filter(n => PREFERRED_COUNTRIES.includes(n.country));
+  const others = unique.filter(n => !PREFERRED_COUNTRIES.includes(n.country));
+  const finalNumbers = [...preferred, ...others];
+
+  fs.writeFileSync(OUTPUT_FILE, JSON.stringify(finalNumbers, null, 2));
+  log(`\n💾 Saved ${finalNumbers.length} unique numbers (${allNewNumbers.length} new, ${existing.length} from cache)`);
 
   // Also clear old sms24.me data if it exists
   const oldFile = 'data-sms24.json';
@@ -146,13 +171,13 @@ async function scrapeAll() {
 
   // Print by country
   const byCountry = {};
-  unique.forEach(n => {
+  finalNumbers.forEach(n => {
     byCountry[n.country] = (byCountry[n.country] || 0) + 1;
   });
   log('📊 By country:');
   Object.entries(byCountry).forEach(([c, n]) => log(`   ${c}: ${n}`));
 
-  return unique;
+  return finalNumbers;
 }
 
 if (require.main === module) {
