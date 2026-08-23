@@ -1,6 +1,7 @@
 // bot.js
 // Telegram bot for free SMS numbers
-// Reads from data-sms24.json (and optionally data.json from receive-sms.cc)
+// Reads from Supabase (persistent) with local file fallback
+// Auto-runs scraper if data is stale
 // Token is loaded from environment variable (set in Render dashboard)
 // FEATURE: Posts fresh codes (< 5 min) to channel
 
@@ -8,6 +9,8 @@ const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
 const puppeteer = require('puppeteer');
 const cheerio = require('cheerio');
+const supabaseStore = require('./supabase-store');
+const { scrapeAll } = require('./scraper-sms24');
 
 // Token comes from environment variable - NEVER hardcode it
 const token = process.env.BOT_TOKEN;
@@ -24,20 +27,86 @@ const bot = new TelegramBot(token, { polling: true });
 // How recent must a code be to be posted to channel (in minutes)
 const FRESH_WINDOW_MINUTES = 5;
 
-// Load data from files
+// Load data from Supabase (with local fallback)
 let data = [];
-function loadData() {
-  // Load sms24.me data (the only source now)
+let isLoading = false;
+
+async function loadData() {
+  if (isLoading) return;
+  isLoading = true;
   try {
-    const r = JSON.parse(fs.readFileSync('data-sms24.json', 'utf-8'));
-    data = r;
-    console.log(`📂 Loaded ${data.length} from data-sms24.json`);
+    data = await supabaseStore.getAllNumbers();
+    if (data.length === 0) {
+      console.log('⚠️  No numbers found. Will scrape on first /start or use .scrape');
+    } else {
+      console.log(`📂 Loaded ${data.length} numbers from ${supabaseStore.isEnabled() ? 'Supabase' : 'local file'}`);
+    }
   } catch (e) {
-    console.log('⚠️  data-sms24.json not found or empty. Run the scraper first!');
+    console.log(`❌ Load error: ${e.message}`);
     data = [];
+  } finally {
+    isLoading = false;
   }
 }
-loadData();
+
+// Run scraper and reload
+async function runScraperAndReload(chatId = null) {
+  const statusMsg = chatId ? await bot.sendMessage(chatId, '🔄 Running scraper... This may take 30-60 seconds.') : null;
+
+  try {
+    const newNumbers = await scrapeAll();
+    if (newNumbers && newNumbers.length > 0) {
+      const result = await supabaseStore.saveNumbers(newNumbers);
+      await loadData();
+      if (statusMsg) {
+        await bot.editMessageText(
+          `✅ *Scrape complete!*\n\n` +
+          `📊 Saved: ${result.saved} numbers\n` +
+          `💾 Storage: ${supabaseStore.isEnabled() ? 'Supabase ☁️' : 'Local file 💾'}\n` +
+          `🌍 Countries: ${[...new Set(newNumbers.map(n => n.country))].join(', ')}`,
+          { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
+        );
+      }
+    } else {
+      if (statusMsg) {
+        await bot.editMessageText('⚠️ Scraper returned 0 numbers. Try again later.', {
+          chat_id: chatId, message_id: statusMsg.message_id
+        });
+      }
+    }
+  } catch (e) {
+    if (statusMsg) {
+      await bot.editMessageText(`❌ Scrape failed: ${e.message}`, {
+        chat_id: chatId, message_id: statusMsg.message_id
+      });
+    }
+  }
+}
+
+// Check if data is stale and auto-refresh
+async function ensureFreshData() {
+  if (data.length === 0) {
+    console.log('⚠️  No data, running scraper...');
+    const newNumbers = await scrapeAll();
+    if (newNumbers && newNumbers.length > 0) {
+      await supabaseStore.saveNumbers(newNumbers);
+      await loadData();
+    }
+    return;
+  }
+
+  const stale = await supabaseStore.isStale();
+  if (stale) {
+    console.log('🔄 Data is stale, re-scraping...');
+    const newNumbers = await scrapeAll();
+    if (newNumbers && newNumbers.length > 0) {
+      await supabaseStore.saveNumbers(newNumbers);
+      await loadData();
+    }
+  }
+}
+
+loadData().then(() => ensureFreshData());
 
 function log(msg) {
   console.log(`[${new Date().toISOString()}] ${msg}`);
@@ -378,28 +447,46 @@ bot.on('callback_query', async (callback) => {
   }
 });
 
-bot.onText(/\/refresh/, (msg) => {
-  loadData();
+bot.onText(/\/refresh/, async (msg) => {
+  await loadData();
   messageCache.clear();
   bot.sendMessage(msg.chat.id, `✅ Reloaded ${data.length} numbers`);
 });
 
-bot.onText(/\/stats/, (msg) => {
+bot.onText(/\/scrape/, async (msg) => {
+  await runScraperAndReload(msg.chat.id);
+});
+
+bot.onText(/^[.!]?scrape\b/i, async (msg) => {
+  await runScraperAndReload(msg.chat.id);
+});
+
+bot.onText(/\/stats/, async (msg) => {
   const countries = getCountries();
+  const status = await supabaseStore.status();
   let stats = `📊 *Bot Statistics*\n\n`;
   stats += `📞 Total: ${data.length}\n`;
   stats += `🌍 Countries: ${countries.length}\n`;
-  stats += `⏰ Fresh window: ${FRESH_WINDOW_MINUTES} minutes\n\n`;
-  stats += `*Top 10 countries:*\n`;
+  stats += `⏰ Fresh window: ${FRESH_WINDOW_MINUTES} minutes\n`;
+  stats += `💾 Storage: ${status.storage}\n`;
+  stats += `📅 Stale: ${status.stale ? '⚠️ yes' : '✅ no'}\n`;
+  if (status.lastUpdate) {
+    stats += `🕐 Last update: ${new Date(status.lastUpdate).toLocaleString()}\n`;
+  }
+  stats += `\n*Numbers per country:*\n`;
 
   const sorted = countries
     .map(c => ({ name: c, count: getCountryCount(c) }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 10);
+    .sort((a, b) => b.count - a.count);
 
   sorted.forEach(c => {
     stats += `${c.name}: ${c.count}\n`;
   });
+
+  stats += `\n*Commands:*\n`;
+  stats += `/scrape - Run scraper now\n`;
+  stats += `/refresh - Reload from storage\n`;
+  stats += `/stats - This message`;
 
   bot.sendMessage(msg.chat.id, stats, { parse_mode: 'Markdown' });
 });
@@ -435,14 +522,29 @@ log('🤖 Bot started!');
 log(`📊 ${data.length} numbers, ${getCountries().length} countries`);
 log(`⏰ Fresh window: ${FRESH_WINDOW_MINUTES} minutes`);
 
-// Auto-reload data every 2 minutes so we pick up new scraped numbers
+// Auto-reload + check for staleness every 2 minutes
 const RELOAD_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
-setInterval(() => {
+setInterval(async () => {
   const oldCount = data.length;
-  loadData();
+  await loadData();
   messageCache.clear();
   if (data.length !== oldCount) {
     log(`🔄 Auto-reload: ${oldCount} → ${data.length} numbers`);
   }
+  // Check if data is stale and auto-refresh
+  const stale = await supabaseStore.isStale();
+  if (stale && data.length > 0) {
+    log('⚠️  Data is stale, triggering auto re-scrape...');
+    try {
+      const newNumbers = await scrapeAll();
+      if (newNumbers && newNumbers.length > 0) {
+        await supabaseStore.saveNumbers(newNumbers);
+        await loadData();
+        log(`✅ Auto re-scrape saved ${newNumbers.length} numbers`);
+      }
+    } catch (e) {
+      log(`❌ Auto re-scrape failed: ${e.message}`);
+    }
+  }
 }, RELOAD_INTERVAL_MS);
-log(`🔄 Auto-reload data every ${RELOAD_INTERVAL_MS / 1000}s`);
+log(`🔄 Auto-reload + stale check every ${RELOAD_INTERVAL_MS / 1000}s`);

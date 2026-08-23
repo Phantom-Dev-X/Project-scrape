@@ -5,6 +5,7 @@ const express = require('express');
 const { scrapeAll } = require('./scraper-sms24');
 const { spawn } = require('child_process');
 const fs = require('fs');
+const supabaseStore = require('./supabase-store');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -19,20 +20,14 @@ function log(msg) {
   console.log(`[${new Date().toISOString()}] ${msg}`);
 }
 
-function countNumbers() {
-  try {
-    if (fs.existsSync('data-sms24.json')) {
-      const data = JSON.parse(fs.readFileSync('data-sms24.json', 'utf-8'));
-      return data.length;
-    }
-  } catch (e) {}
-  return 0;
+async function countNumbers() {
+  return await supabaseStore.getCount();
 }
 
 // =================== WEBSITE ===================
 
-app.get('/', (req, res) => {
-  totalNumbers = countNumbers();
+app.get('/', async (req, res) => {
+  totalNumbers = await countNumbers();
   const uptime = process.uptime();
   const hours = Math.floor(uptime / 3600);
   const minutes = Math.floor((uptime % 3600) / 60);
@@ -146,23 +141,22 @@ app.get('/', (req, res) => {
   `);
 });
 
-app.get('/ping', (req, res) => {
+app.get('/ping', async (req, res) => {
   res.json({
     status: 'alive',
     uptime_seconds: Math.floor(process.uptime()),
-    numbers: countNumbers(),
+    numbers: await countNumbers(),
     scraper: scrapingStatus,
     last_scrape: lastScrape,
+    storage: supabaseStore.isEnabled() ? 'supabase' : 'local-file',
     timestamp: new Date().toISOString()
   });
 });
 
-app.get('/stats', (req, res) => {
+app.get('/stats', async (req, res) => {
   try {
-    let data = [];
-    if (fs.existsSync('data-sms24.json')) {
-      data = data.concat(JSON.parse(fs.readFileSync('data-sms24.json', 'utf-8')));
-    }
+    const data = await supabaseStore.getAllNumbers();
+    const status = await supabaseStore.status();
     const countries = {};
     data.forEach(n => {
       countries[n.country] = (countries[n.country] || 0) + 1;
@@ -173,7 +167,9 @@ app.get('/stats', (req, res) => {
       breakdown: countries,
       uptime: process.uptime(),
       scraper: scrapingStatus,
-      last_scrape: lastScrape
+      last_scrape: lastScrape,
+      storage: status.storage,
+      stale: status.stale
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -198,9 +194,13 @@ async function runScraper() {
   scrapingStatus = 'running';
   log('🔄 ============ STARTING SCRAPER ============');
   try {
-    await scrapeAll();
+    const newNumbers = await scrapeAll();
+    if (newNumbers && newNumbers.length > 0) {
+      const result = await supabaseStore.saveNumbers(newNumbers);
+      log(`💾 Saved ${result.saved} numbers to ${supabaseStore.isEnabled() ? 'Supabase' : 'local file'}`);
+    }
     lastScrape = new Date().toISOString();
-    totalNumbers = countNumbers();
+    totalNumbers = await countNumbers();
     log(`✅ Scraper done. Total: ${totalNumbers} numbers`);
   } catch (err) {
     log(`❌ Scraper error: ${err.message}`);
