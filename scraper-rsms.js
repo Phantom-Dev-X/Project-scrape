@@ -1,17 +1,18 @@
 // scraper-rsms.js
-// Scrapes numbers from receive-sms.cc homepage
-// Works with Puppeteer (no Cloudflare blocking)
+// Scrapes numbers from receive-sms.cc country pages
+// Hits /Countries/ to find all countries, then scrapes preferred countries with pagination
 
 const puppeteer = require('puppeteer');
-const cheerio = require('cheerio');
 const fs = require('fs');
 
 const BASE = 'https://receive-sms.cc';
 const OUTPUT_FILE = 'data.json';
 
-// Preferred countries (in priority order)
-// Bot will show these first, but accept others if these aren't available
+// Preferred countries (in priority order) - gets all pages for these
 const PREFERRED_COUNTRIES = ['Poland', 'Netherlands', 'Finland'];
+
+// Max pages to scrape per country (each page has ~10 numbers)
+const MAX_PAGES_PER_COUNTRY = 5;
 
 let CHROME_PATH = null;
 
@@ -37,9 +38,7 @@ function log(msg) {
   console.log(`[${new Date().toISOString()}] ${msg}`);
 }
 
-async function scrapeHomepage() {
-  log('🚀 Scraping receive-sms.cc homepage...');
-
+async function launchBrowser() {
   const launchOptions = {
     headless: true,
     timeout: 90000,
@@ -51,133 +50,243 @@ async function scrapeHomepage() {
       '--disable-blink-features=AutomationControlled'
     ]
   };
-
   if (CHROME_PATH) {
     launchOptions.executablePath = CHROME_PATH;
-    log(`✅ Using Chrome: ${CHROME_PATH}`);
-  } else {
-    log('⚠️  No CHROME_PATH, using defaults');
   }
+  return await puppeteer.launch(launchOptions);
+}
 
-  const browser = await puppeteer.launch(launchOptions);
+async function newPage(browser) {
+  const page = await browser.newPage();
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+  await page.setViewport({ width: 1366, height: 768 });
+  return page;
+}
 
+// Get the list of all countries from /Countries/ page
+async function getCountryList(browser) {
+  const page = await newPage(browser);
   try {
-    const page = await browser.newPage();
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-    await page.setViewport({ width: 1366, height: 768 });
+    log('📋 Fetching country list from /Countries/...');
+    await page.goto(`${BASE}/Countries/`, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await delay(3000);
 
-    await page.goto(BASE, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await new Promise(r => setTimeout(r, 3000));
-
-    const numbers = await page.evaluate(() => {
+    const countries = await page.evaluate(() => {
       const result = [];
-      document.querySelectorAll('a').forEach(a => {
+      // Find all links to country pages
+      document.querySelectorAll('a[href*="-Phone-Number"]').forEach(a => {
         const href = a.getAttribute('href') || '';
-        const match = href.match(/\/(US|UK|Finland|Poland|Netherlands|Germany|France)-Phone-Number\/(\d+)/);
-        if (match) {
-          const text = a.innerText;
-          const phoneMatch = text.match(/\+?\d[\d\s]{8,}/);
-          if (phoneMatch) {
-            const countryName = match[1].replace(/-/g, ' ');
-            const phone = phoneMatch[0].replace(/\s+/g, ' ').trim();
+        // Skip if it's a specific number page (has digits at end)
+        if (/\/(\d+)$/.test(href)) return;
 
-            // Try to extract SMS count
-            const countMatch = text.match(/(\d+)\s*(?:SMS|messages|messages)/i);
-            const count = countMatch ? countMatch[1] : 'Live';
-
-            result.push({
-              country: countryName,
-              phone: phone,
-              smsCount: count,
-              lastSms: 'Recent',
-              link: href.startsWith('http') ? href : `https://receive-sms.cc${href}`,
-              source: 'receive-sms.cc'
-            });
-          }
+        // Extract country info
+        const text = a.innerText.replace(/\s+/g, ' ').trim();
+        // URL pattern: /Poland-Phone-Number/ or /UK-Phone-Number/
+        const urlMatch = href.match(/\/([A-Za-z]+)-Phone-Number\/?/);
+        if (urlMatch) {
+          const countrySlug = urlMatch[1];
+          // Try to extract count from text
+          const countMatch = text.match(/(\d+)/);
+          result.push({
+            slug: countrySlug,
+            href: href.startsWith('http') ? href : `https://receive-sms.cc${href}`,
+            text: text.substring(0, 50)
+          });
         }
       });
       return result;
     });
 
-    log(`✅ Found ${numbers.length} numbers`);
-    return numbers;
+    log(`✅ Found ${countries.length} countries`);
+    return countries;
   } finally {
-    await browser.close();
+    await page.close();
+  }
+}
+
+// Scrape numbers from a country page (with pagination)
+async function scrapeCountryPage(page, baseUrl, countrySlug, pageNum) {
+  const url = pageNum === 1
+    ? baseUrl
+    : `${baseUrl}Page/${pageNum}`;
+
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await delay(2000);
+
+  const numbers = await page.evaluate((slug) => {
+    const result = [];
+    document.querySelectorAll('a').forEach(a => {
+      const href = a.getAttribute('href') || '';
+      const regex = new RegExp(`\\/${slug}-Phone-Number\\/\\d+`);
+      if (regex.test(href)) {
+        const text = a.innerText;
+        const phoneMatch = text.match(/\+?\d[\d\s]{8,}/);
+        if (phoneMatch) {
+          const phone = phoneMatch[0].replace(/\s+/g, ' ').trim();
+          // Map slug to country name
+          const countryName = slug
+            .replace(/([A-Z])/g, ' $1')
+            .replace(/^./, c => c.toUpperCase())
+            .trim();
+
+          result.push({
+            country: countryName,
+            phone: phone,
+            smsCount: 'Live',
+            lastSms: 'Recent',
+            link: href.startsWith('http') ? href : `https://receive-sms.cc${href}`,
+            source: 'receive-sms.cc'
+          });
+        }
+      }
+    });
+    return result;
+  }, countrySlug);
+
+  return numbers;
+}
+
+// Scrape all pages of a country
+async function scrapeCountry(browser, country, maxPages = MAX_PAGES_PER_COUNTRY) {
+  const page = await newPage(browser);
+  try {
+    log(`🔎 Scraping ${country.slug}...`);
+    const allNumbers = [];
+    let pageNum = 1;
+    let keepGoing = true;
+
+    while (keepGoing && pageNum <= maxPages) {
+      const numbers = await scrapeCountryPage(page, country.href, country.slug, pageNum);
+
+      if (numbers.length === 0) {
+        log(`   ⏹️  ${country.slug} page ${pageNum}: 0 numbers`);
+        keepGoing = false;
+        break;
+      }
+
+      allNumbers.push(...numbers);
+      log(`   📄 ${country.slug} page ${pageNum}: +${numbers.length} (total: ${allNumbers.length})`);
+
+      // Check if next page exists
+      const hasNext = await page.evaluate(() => {
+        const links = document.querySelectorAll('a');
+        for (const a of links) {
+          const text = a.innerText.trim();
+          if (text === '›' || text === 'Next' || (text.match(/^\d+$/) && parseInt(text) > 1)) {
+            return true;
+          }
+        }
+        return false;
+      });
+
+      if (!hasNext) {
+        log(`   ⏹️  No more pages`);
+        keepGoing = false;
+        break;
+      }
+
+      pageNum++;
+      await delay(1500);
+    }
+
+    log(`   ✅ ${country.slug} done: ${allNumbers.length} numbers`);
+    return allNumbers;
+  } finally {
+    await page.close();
   }
 }
 
 async function scrapeAll() {
-  log('🚀 Scraping receive-sms.cc (3 scrapes to get more variety)...');
+  log('🚀 Starting receive-sms.cc scraper');
+  const browser = await launchBrowser();
 
-  // Load existing data
-  let existing = [];
   try {
-    if (fs.existsSync(OUTPUT_FILE)) {
-      existing = JSON.parse(fs.readFileSync(OUTPUT_FILE, 'utf-8'));
-      log(`📂 Loaded ${existing.length} existing numbers from cache`);
+    // Load existing data
+    let existing = [];
+    try {
+      if (fs.existsSync(OUTPUT_FILE)) {
+        existing = JSON.parse(fs.readFileSync(OUTPUT_FILE, 'utf-8'));
+        log(`📂 Loaded ${existing.length} existing numbers from cache`);
+      }
+    } catch (e) {}
+
+    // Get country list
+    const countries = await getCountryList(browser);
+
+    // Find our preferred countries
+    const preferred = [];
+    for (const prefName of PREFERRED_COUNTRIES) {
+      // Match by name (slug might be slightly different)
+      const found = countries.find(c => {
+        const normalizedSlug = c.slug.toLowerCase().replace(/[^a-z]/g, '');
+        const normalizedPref = prefName.toLowerCase().replace(/[^a-z]/g, '');
+        return normalizedSlug === normalizedPref ||
+               normalizedSlug.includes(normalizedPref) ||
+               normalizedPref.includes(normalizedSlug);
+      });
+      if (found) {
+        preferred.push(found);
+        log(`✅ Found preferred: ${prefName} → ${found.slug}`);
+      } else {
+        log(`⚠️  Not found: ${prefName}`);
+      }
     }
-  } catch (e) {}
 
-  // Scrape multiple times (each scrape shows different numbers in homepage rotation)
-  const allNewNumbers = [];
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    log(`\n🔄 Scrape attempt ${attempt}/3...`);
-    const numbers = await scrapeHomepage();
-    log(`   Got ${numbers.length} numbers from this scrape`);
-
-    // Filter to preferred
-    const preferred = numbers.filter(n => PREFERRED_COUNTRIES.includes(n.country));
-    const others = numbers.filter(n => !PREFERRED_COUNTRIES.includes(n.country));
-    const sorted = [...preferred, ...others];
-
-    allNewNumbers.push(...sorted);
-
-    // Wait between scrapes
-    if (attempt < 3) {
-      await new Promise(r => setTimeout(r, 5000));
+    // Scrape each preferred country
+    const newNumbers = [];
+    for (const country of preferred) {
+      const nums = await scrapeCountry(browser, country);
+      newNumbers.push(...nums);
+      await delay(2000);
     }
+
+    if (newNumbers.length === 0) {
+      log('⚠️  No new numbers found, keeping existing');
+      return existing;
+    }
+
+    // Combine with existing
+    const allCombined = [...newNumbers, ...existing];
+
+    // Dedupe
+    const seen = new Set();
+    const unique = allCombined.filter(n => {
+      if (seen.has(n.phone)) return false;
+      seen.add(n.phone);
+      return true;
+    });
+
+    // Sort: preferred first
+    const preferredFinal = unique.filter(n => PREFERRED_COUNTRIES.some(p =>
+      n.country.toLowerCase().replace(/[^a-z]/g, '').includes(p.toLowerCase().replace(/[^a-z]/g, ''))
+    ));
+    const othersFinal = unique.filter(n => !PREFERRED_COUNTRIES.some(p =>
+      n.country.toLowerCase().replace(/[^a-z]/g, '').includes(p.toLowerCase().replace(/[^a-z]/g, ''))
+    ));
+    const finalNumbers = [...preferredFinal, ...othersFinal];
+
+    fs.writeFileSync(OUTPUT_FILE, JSON.stringify(finalNumbers, null, 2));
+    log(`\n💾 Saved ${finalNumbers.length} unique numbers (${newNumbers.length} new, ${existing.length} from cache)`);
+
+    // Also clear old sms24.me data if it exists
+    const oldFile = 'data-sms24.json';
+    if (fs.existsSync(oldFile)) {
+      fs.unlinkSync(oldFile);
+      log(`🗑️  Removed old ${oldFile}`);
+    }
+
+    // Print by country
+    const byCountry = {};
+    finalNumbers.forEach(n => {
+      byCountry[n.country] = (byCountry[n.country] || 0) + 1;
+    });
+    log('📊 By country:');
+    Object.entries(byCountry).forEach(([c, n]) => log(`   ${c}: ${n}`));
+
+    return finalNumbers;
+  } finally {
+    await browser.close();
   }
-
-  if (allNewNumbers.length === 0) {
-    log('⚠️  No numbers found');
-    return existing;
-  }
-
-  // Combine with existing, prefer fresh ones
-  const allCombined = [...allNewNumbers, ...existing];
-
-  // Dedupe by phone
-  const seen = new Set();
-  const unique = allCombined.filter(n => {
-    if (seen.has(n.phone)) return false;
-    seen.add(n.phone);
-    return true;
-  });
-
-  // Sort: preferred first
-  const preferred = unique.filter(n => PREFERRED_COUNTRIES.includes(n.country));
-  const others = unique.filter(n => !PREFERRED_COUNTRIES.includes(n.country));
-  const finalNumbers = [...preferred, ...others];
-
-  fs.writeFileSync(OUTPUT_FILE, JSON.stringify(finalNumbers, null, 2));
-  log(`\n💾 Saved ${finalNumbers.length} unique numbers (${allNewNumbers.length} new, ${existing.length} from cache)`);
-
-  // Also clear old sms24.me data if it exists
-  const oldFile = 'data-sms24.json';
-  if (fs.existsSync(oldFile)) {
-    fs.unlinkSync(oldFile);
-    log(`🗑️  Removed old ${oldFile}`);
-  }
-
-  // Print by country
-  const byCountry = {};
-  finalNumbers.forEach(n => {
-    byCountry[n.country] = (byCountry[n.country] || 0) + 1;
-  });
-  log('📊 By country:');
-  Object.entries(byCountry).forEach(([c, n]) => log(`   ${c}: ${n}`));
-
-  return finalNumbers;
 }
 
 if (require.main === module) {
@@ -187,4 +296,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { scrapeAll, scrapeHomepage };
+module.exports = { scrapeAll, getCountryList, scrapeCountry };
