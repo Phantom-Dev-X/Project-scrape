@@ -1,28 +1,42 @@
-# 📱 Free SMS Numbers Telegram Bot
+# Project Scrape — Free SMS Numbers Telegram Bot
 
-A Telegram bot that provides free temporary phone numbers for SMS verification.
+This JavaScript project scrapes temporary phone-number listings and provides them through a Telegram bot for SMS-verification workflows.
 
 ## Features
 
-- 🌍 Numbers from 50+ countries
-- 📩 View recent SMS messages
-- 🔄 Get new numbers on demand
-- ⚡ Fast and lightweight
+- Free temporary phone numbers from supported countries
+- Recent SMS message listings
+- On-demand number refresh
+- Telegram command interface
+- Deployable as a background worker
+
+## Technologies
+
+- JavaScript
+- Node.js
+- Telegram Bot API
+- Environment variables
 
 ## Setup
 
-1. Install dependencies: `npm install`
-2. Create `.env` file with `BOT_TOKEN=your_token_here`
-3. Run scraper: `node scraper-sms24.js`
-4. Start bot: `node bot.js`
+```bash
+npm install
+cp .env.example .env
+```
+
+Add `BOT_TOKEN` to `.env`, then start the bot:
+
+```bash
+node bot.js
+```
 
 ## Commands
 
-- `/start` - Main menu
-- `/stats` - Statistics
-- `/refresh` - Reload data
-- `/post` - Post to channel
+- `/start` — Open the main menu
+- `/stats` — Display statistics
+- `/refresh` — Reload available data
+- `/post` — Post results to a configured channel
 
-## Deployment
+## Responsible Use
 
-Deployed on Render as a Background Worker.
+Use this project only for services and accounts you own or are authorized to access. Temporary numbers must not be used for fraud, abuse, or unauthorized account access.
